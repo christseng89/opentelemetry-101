@@ -1,27 +1,28 @@
-import { logs, SeverityNumber, type Attributes } from '@opentelemetry/api';
-import type { TelemetryLogger } from './types';
+import { logs, SeverityNumber } from '@opentelemetry/api';
+import type { CsAttributes } from './cs-spans';
+import type { CsLogger } from './cs-loggers';
 
-export class OTelLogger implements TelemetryLogger {
+export class OpenTelemetryLogger implements CsLogger {
     private readonly logger;
 
     constructor(serviceName: string) {
         this.logger = logs.getLogger(serviceName);
     }
 
-    debug(message: string, attributes?: Attributes): void {
+    debug(message: string, attributes?: CsAttributes): void {
         this.emit(SeverityNumber.DEBUG, 'DEBUG', message, attributes);
     }
 
-    info(message: string, attributes?: Attributes): void {
+    info(message: string, attributes?: CsAttributes): void {
         this.emit(SeverityNumber.INFO, 'INFO', message, attributes);
     }
 
-    warn(message: string, attributes?: Attributes): void {
+    warn(message: string, attributes?: CsAttributes): void {
         this.emit(SeverityNumber.WARN, 'WARN', message, attributes);
     }
 
-    error(message: string, error?: unknown, attributes?: Attributes): void {
-        const errorAttributes: Attributes = { ...attributes };
+    error(message: string, error?: unknown, attributes?: CsAttributes): void {
+        const errorAttributes: CsAttributes = { ...attributes };
         if (error instanceof Error) {
             errorAttributes['error.type'] = error.name;
             errorAttributes['error.message'] = error.message;
@@ -32,12 +33,7 @@ export class OTelLogger implements TelemetryLogger {
         this.emit(SeverityNumber.ERROR, 'ERROR', message, errorAttributes);
     }
 
-    private emit(
-        severityNumber: SeverityNumber,
-        severityText: string,
-        body: string,
-        attributes?: Attributes,
-    ): void {
+    private emit(severityNumber: SeverityNumber, severityText: string, body: string, attributes?: CsAttributes): void {
         this.logger.emit({ severityNumber, severityText, body, attributes });
     }
 }

@@ -1,7 +1,7 @@
 import { initializeTelemetry } from './telemetry';
 
 function start(serviceName: string) {
-    return initializeTelemetry(serviceName).meter;
+    return initializeTelemetry(serviceName).metrics;
 }
 
 export default start

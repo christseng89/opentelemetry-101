@@ -1,11 +1,15 @@
 import { initializeTelemetry } from './telemetry';
-const { spans, logger } = initializeTelemetry('auth-service');
+const { tracer, logger } = initializeTelemetry('auth-service');
 import { propagation } from "@opentelemetry/api";
 import express from 'express';
 const app = express();
 
 app.get('/auth',(req,res)=>{
-    void spans.run('GET /auth', () => {
+    void tracer.run('GET /auth', (span) => {
+            const traceId = span.traceId();
+            if (traceId) {
+                res.setHeader('X-Trace-Id', traceId);
+            }
             const baggage = propagation.getActiveBaggage()
             logger.debug('received baggage', { baggage: String(baggage) })
             res.json({username: 'Chris Tseng', userId:123})

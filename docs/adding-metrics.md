@@ -2,7 +2,7 @@
 
 ### Install OpenTelemetry libraries
 ```
-yarn add @opentelemetry/sdk-metrics @opentelemetry/exporter-prometheus
+npm install @opentelemetry/sdk-metrics @opentelemetry/exporter-metrics-otlp-proto
 ```
 
 ### Creating Prometheus config file
@@ -21,7 +21,7 @@ scrape_configs:
     # metrics_path defaults to '/metrics'
     # scheme defaults to 'http'.
     static_configs:
-    - targets: ['todo:9464','auth:9464']
+    - targets: ['collector:8889']
 ```
 
 
@@ -29,44 +29,39 @@ scrape_configs:
 
 ```
   prometheus:
-    image: prom/prometheus
+    image: prom/prometheus:v3.9.1
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
     volumes:
-      - ./prometheus/:/etc/prometheus/
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
     ports:
       - 9090:9090
 ```
 
 
-### Configure && expose OpenTelemetry meter
-In the `tracer.ts` file add the following importers
+### Configure the OpenTelemetry meter
+
+The current example exports application metrics to the Collector over OTLP.
+Configure the SDK with a periodic OTLP metric reader in `tracer.ts`:
 
 ```
-import { PrometheusExporter } from '@opentelemetry/exporter-prometheus';
-import { MeterProvider } from '@opentelemetry/sdk-metrics';
-import { Resource } from '@opentelemetry/resources';
-import { SemanticResourceAttributes } from '@opentelemetry/semantic-conventions';
+import { OTLPMetricExporter } from '@opentelemetry/exporter-metrics-otlp-proto';
+import { PeriodicExportingMetricReader } from '@opentelemetry/sdk-metrics';
+import { metrics } from '@opentelemetry/api';
 
 ```
 
-Then add the following to the `start` function
+Add the following to the `NodeSDK` configuration:
 ```
-    const { endpoint, port } = PrometheusExporter.DEFAULT_OPTIONS;
-    const exporter = new PrometheusExporter({}, () => {
-        console.log(
-          `prometheus scrape endpoint: http://localhost:${port}${endpoint}`,
-        );
-      });
-    const meterProvider = new MeterProvider({
-            resource: new Resource({
-            [SemanticResourceAttributes.SERVICE_NAME]: serviceName,
+    metricReaders: [new PeriodicExportingMetricReader({
+        exporter: new OTLPMetricExporter({
+            url: 'http://collector:4318/v1/metrics',
         }),
-    });    meterProvider.addMetricReader(exporter);
-    const meter = meterProvider.getMeter('my-service-meter');
+    })],
 ```
 
-And return the meter `return meter;`
+After `sdk.start()`, obtain a meter with
+`metrics.getMeter(`${serviceName}.meter`)`.
 
 ### Report metrics 
 Get the meter from the tracer import `const meter = start('todo-service');`

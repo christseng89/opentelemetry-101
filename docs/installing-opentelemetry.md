@@ -2,7 +2,7 @@
 
 ### Install OpenTelemetry libraries
 ```
-yarn add @opentelemetry/api @opentelemetry/auto-instrumentations-node @opentelemetry/exporter-trace-otlp-proto @opentelemetry/sdk-node
+npm install @opentelemetry/api @opentelemetry/auto-instrumentations-node @opentelemetry/exporter-trace-otlp-proto @opentelemetry/sdk-node
 ```
 
 
@@ -12,6 +12,8 @@ yarn add @opentelemetry/api @opentelemetry/auto-instrumentations-node @opentelem
 import { NodeSDK } from '@opentelemetry/sdk-node';
 import { getNodeAutoInstrumentations } from '@opentelemetry/auto-instrumentations-node';
 import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-proto';
+import { resourceFromAttributes } from '@opentelemetry/resources';
+import { ATTR_SERVICE_NAME } from '@opentelemetry/semantic-conventions';
 
 function start(serviceName: string) {
     const traceExporter = new OTLPTraceExporter({
@@ -20,7 +22,7 @@ function start(serviceName: string) {
 
     const sdk = new NodeSDK({
         traceExporter,
-        serviceName:serviceName,
+        resource: resourceFromAttributes({ [ATTR_SERVICE_NAME]: serviceName }),
         instrumentations: [getNodeAutoInstrumentations()]
     });
 
@@ -33,7 +35,7 @@ export default start
 
 
 ### Run Jaeger
-Add the following service to `docker-compose.yml` file
+Add the following service to `compose/compose.yaml`.
 
 ```
 jaeger:

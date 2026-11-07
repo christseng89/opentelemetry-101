@@ -26,19 +26,25 @@ processors:
             name: http_error_only,
             type: numeric_attribute,
             numeric_attribute: {key: http.status_code, min_value: 500, max_value: 599}
+          },
+          {
+            name: local_demo_all_traces,
+            type: always_sample
           }
       ]
 exporters:
-  prometheus:
-    endpoint: "0.0.0.0:8889"
-    send_timestamps: true
-    namespace: otel
-    const_labels:
-      via: collector
-  otlp:
+  otlp_grpc/jaeger:
     endpoint: jaeger:4317
     tls:
       insecure: true
+  otlp_grpc/tempo:
+    endpoint: tempo:4317
+    tls:
+      insecure: true
+  otlp_http/loki:
+    endpoint: http://loki:3100/otlp
+  prometheus:
+    endpoint: 0.0.0.0:8889
 
 extensions:
   health_check:
@@ -49,8 +55,12 @@ service:
     traces:
       receivers: [otlp]
       processors: [tail_sampling, batch, resource]
-      exporters: [otlp]
+      exporters: [otlp_grpc/jaeger, otlp_grpc/tempo]
+    logs:
+      receivers: [otlp]
+      processors: [batch, resource]
+      exporters: [otlp_http/loki]
     metrics:
       receivers: [otlp]
-      processors: [batch]
+      processors: [batch, resource]
       exporters: [prometheus]

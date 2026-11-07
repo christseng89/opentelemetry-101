@@ -1,7 +1,7 @@
 # Running and using the OpenTelemetry collector
 
 ### Configure the collector
-Add the following content to `collector/collector.yml`
+Add the following content to `compose/collector/collector.yml`.
 ```
 receivers:
   otlp:
@@ -12,6 +12,7 @@ receivers:
         endpoint: 0.0.0.0:4317
 
 processors:
+  batch:
 exporters:
   prometheus:
     endpoint: "0.0.0.0:8889"
@@ -19,8 +20,8 @@ exporters:
     namespace: otel
     const_labels:
       via: collector
-  jaeger:
-    endpoint: jaeger:14250
+  otlp:
+    endpoint: jaeger:4317
     tls:
       insecure: true
 
@@ -32,21 +33,21 @@ service:
   pipelines:
     traces:
       receivers: [otlp]
-      processors: []
-      exporters: [jaeger]
+      processors: [batch]
+      exporters: [otlp]
     metrics:
       receivers: [otlp]
-      processors: []
+      processors: [batch]
       exporters: [prometheus]
 ```
 
 ### Run the collector
-Add the following service to `docker-compose.yml`
+Add the following service to `compose/compose.yaml`.
 ```
   collector:
-    image: otel/opentelemetry-collector-contrib
+    image: otel/opentelemetry-collector-contrib:0.163.2
     volumes: 
-      - ./collector/collector.yml:/etc/otel-collector-config.yaml
+      - ./collector/collector.yml:/etc/otel-collector-config.yaml:ro
     command: ["--config=/etc/otel-collector-config.yaml"]
     ports:
       - "8889:8889"
@@ -68,12 +69,12 @@ Change to `OTLPTraceExporter` URL to `http://collector:4318/v1/traces`
 
 
 ### Adjust The OpenTelemetry collector metrics
-Instead of using `exporter-prometheus` install
+Install the OTLP metrics exporter used by the current example:
 ```
-yarn add exporter-metrics-otlp-proto
+npm install @opentelemetry/exporter-metrics-otlp-proto
 ```
 
-Then replace `exporter-prometheus` with the following code:
+Configure the periodic OTLP metric reader as follows:
 
 ```
 const metricReader = new PeriodicExportingMetricReader({

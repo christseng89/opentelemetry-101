@@ -1,0 +1,97 @@
+services:
+  todo:
+    build: 
+      context: ../app-versions/code
+      dockerfile: dockerfile.todo-service
+    ports:
+      - 8081:8080
+    environment:
+      - OTEL_LOG_LEVEL=ERROR
+      - NODE_ENV=production
+      - OTEL_PROMETHEUS_PORT=9464
+  auth:
+    build: 
+      context: ../app-versions/code
+      dockerfile: dockerfile.auth-service
+    environment:
+      - OTEL_LOG_LEVEL=ERROR
+      - NODE_ENV=production
+      - OTEL_PROMETHEUS_PORT=9464
+  redis:
+    image: redis:7.4-alpine
+  redis-exporter:
+    image: oliver006/redis_exporter:v1.80.1
+    environment:
+      REDIS_ADDR: redis://redis:6379
+    depends_on:
+      - redis
+  jaeger:
+    image: jaegertracing/jaeger:2.23.0
+    ports:
+        - 16686:16686
+        - 14250:14250
+    environment:
+        COLLECTOR_OTLP_ENABLED: true
+  tempo:
+    image: grafana/tempo:2.10.1
+    command:
+      - '-config.file=/etc/tempo/tempo.yaml'
+    volumes:
+      - ./tempo/tempo.yaml:/etc/tempo/tempo.yaml:ro
+      - tempo-data:/var/tempo
+    ports:
+      - 3200:3200
+    depends_on:
+      - jaeger
+  loki:
+    image: grafana/loki:3.6.6
+    user: root
+    command:
+      - '-config.file=/etc/loki/loki.yaml'
+      - '-target=all'
+    volumes:
+      - ./loki/loki.yaml:/etc/loki/loki.yaml:ro
+      - loki-data:/loki
+    ports:
+      - 3110:3100
+    depends_on:
+      - tempo
+  prometheus:
+      image: prom/prometheus:v3.9.1
+      command:
+        - '--config.file=/etc/prometheus/prometheus.yml'
+      volumes:
+        - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      ports:
+        - 9092:9090
+  collector:
+    image: otel/opentelemetry-collector-contrib:0.163.2
+    volumes: 
+      - ./collector/collector.yml:/etc/otel-collector-config.yaml:ro
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    ports:
+      - 8889:8889
+    depends_on:
+      - jaeger
+      - tempo
+      - loki
+  grafana:
+    image: grafana/grafana:12.3
+    environment:
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    volumes:
+      - ./grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - 3010:3000
+    depends_on:
+      - prometheus
+      - loki
+      - tempo
+
+volumes:
+  tempo-data:
+  loki-data:
+  grafana-data:

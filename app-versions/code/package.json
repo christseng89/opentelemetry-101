@@ -1,0 +1,36 @@
+{
+  "name": "opentelemetry-101",
+  "version": "1.0.0",
+  "main": "tracer.ts",
+  "repository": "https://github.com/habmic/opentelemetry-101.git",
+  "author": "Chris Tseng <habmic@gmail.com",
+  "license": "MIT",
+  "scripts": {
+    "todo": "tsx todo-service.ts",
+    "auth": "tsx auth-service.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@opentelemetry/api": "^1.10.0",
+    "@opentelemetry/auto-instrumentations-node": "^0.83.0",
+    "@opentelemetry/exporter-logs-otlp-proto": "^0.301.0",
+    "@opentelemetry/exporter-metrics-otlp-proto": "^0.301.0",
+    "@opentelemetry/exporter-prometheus": "^0.301.0",
+    "@opentelemetry/exporter-trace-otlp-proto": "^0.301.0",
+    "@opentelemetry/resources": "^3.1.0",
+    "@opentelemetry/sdk-logs": "^3.1.0",
+    "@opentelemetry/sdk-metrics": "^3.1.0",
+    "@opentelemetry/sdk-node": "^0.301.0",
+    "@opentelemetry/sdk-trace": "^3.1.0",
+    "@opentelemetry/semantic-conventions": "^1.38.0",
+    "axios": "^1.21.0",
+    "express": "^5.3.0",
+    "ioredis": "^6.0.0",
+    "typescript": "^5.9.3"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.3",
+    "@types/node": "^24.10.1",
+    "tsx": "^4.20.6"
+  }
+}

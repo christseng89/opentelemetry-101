@@ -9,6 +9,10 @@ services:
       - OTEL_LOG_LEVEL=ERROR
       - NODE_ENV=production
       - OTEL_PROMETHEUS_PORT=9464
+      - OTEL_PROPAGATORS=tracecontext,baggage
+    depends_on:
+      - auth
+      - java-todo
   auth:
     build: 
       context: ../app-versions/code
@@ -17,6 +21,24 @@ services:
       - OTEL_LOG_LEVEL=ERROR
       - NODE_ENV=production
       - OTEL_PROMETHEUS_PORT=9464
+      - OTEL_PROPAGATORS=tracecontext,baggage
+  java-todo:
+    build:
+      context: ../java-todo-service
+      dockerfile: Dockerfile
+    ports:
+      - 8082:8080
+    environment:
+      TODO_DATA_JSON: '[{"name":"Install OpenTelemetry SDK"},{"name":"Deploy OpenTelemetry Collector"},{"name":"Configure sampling rule"},{"name":"You are OpenTelemetry master!"}]'
+      TODO_MAX_ITEMS: 5
+      OTEL_SERVICE_NAME: java-todo-service
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://collector:4318
+      OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+      OTEL_TRACES_EXPORTER: otlp
+      OTEL_METRICS_EXPORTER: none
+      OTEL_LOGS_EXPORTER: otlp
+    depends_on:
+      - collector
   redis:
     image: redis:7.4-alpine
   redis-exporter:

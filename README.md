@@ -24,6 +24,7 @@ opentelemetry-101/
 ├── app-versions/
 │   └── code/                 # TypeScript services, telemetry modules, and Dockerfiles
 │       └── telemetry/        # SOLID telemetry runtime, spans, logs, metrics, and tracer APIs
+├── java-todo-service/        # Java 21 Spring Boot Todo OpenAPI service with OTel tracing
 ├── compose/
 │   ├── compose.yaml          # Local application and observability stack
 │   ├── collector/            # OpenTelemetry Collector configuration
@@ -92,6 +93,8 @@ docker compose -f compose/compose.yaml up --build -d
 The services are available at:
 
 - Todo service: [http://localhost:8081/todos](http://localhost:8081/todos)
+- Java Todo OpenAPI service: [http://localhost:8082/swagger-ui.html](http://localhost:8082/swagger-ui.html)
+- Java Todo OpenAPI JSON: [http://localhost:8082/v3/api-docs](http://localhost:8082/v3/api-docs)
 - Prometheus: [http://localhost:9092](http://localhost:9092)
 - Jaeger: [http://localhost:16686](http://localhost:16686)
 - Tempo API: [http://localhost:3200](http://localhost:3200)
@@ -106,6 +109,28 @@ Generate a slow request or an error to exercise tracing:
 curl 'http://localhost:8081/todos?slow=true'
 curl 'http://localhost:8081/todos?fail=true'
 ```
+
+The Todo API returns the active distributed trace ID in the `X-Trace-Id`
+response header. Capture it with:
+
+```bash
+curl -i 'http://localhost:8081/todos'
+```
+
+Use the returned value in Grafana Loki to find all correlated logs:
+
+```logql
+{service_name=~"todo-service|java-todo-service"} | trace_id = "<TRACE_ID>"
+```
+
+Then open the matching trace in Tempo or Jaeger using the same trace ID. The
+trace includes the Node Todo span, the Java `GET /api/todos` span, and the
+Java `todo.config.read` span.
+
+Manual application spans also expose the same value as the custom
+`telemetry.trace_id` span attribute. The native OpenTelemetry Trace ID remains
+the source of truth; this attribute is provided to make the value visible next
+to other span attributes in Jaeger and Tempo.
 
 The application sends OTLP traces, logs, and metrics to the Collector over
 HTTP. The Collector exports the same traces to both Jaeger and Tempo, accepts
@@ -151,13 +176,108 @@ The application uses the OpenTelemetry Logs API, so error logs include
 `trace_id` and `span_id` fields that allow Grafana Tempo and Loki to be
 correlated.
 
-The Todo service creates a manual request span through the shared `SpanManager`
-in `app-versions/code/telemetry/spans.ts`. It includes HTTP and business
+The Todo service creates a manual request span through the shared `CsTracer`
+in `app-versions/code/telemetry/cs-tracers.ts`. It includes HTTP and business
 attributes such as `http.request.method`, `http.route`, `url.path`, and
 `app.operation`. The Collector fans out the same trace to both
 Jaeger and Tempo, so no separate application span implementation is required.
 In Grafana Tempo, use **Tags** such as `app.operation=list-todos` or
 `http.route=/todos`; the same attributes are available in Jaeger.
+
+## Java Todo service and distributed tracing
+
+The `java-todo-service` is a Spring Boot 3 service running on Java 21. It
+returns Todo items from the configurable `TODO_DATA_JSON` environment variable
+through `GET /api/todos`. The Node.js Todo service calls this endpoint, so one
+request creates a distributed trace across Node.js Todo, Java Todo, Auth, and
+the Collector.
+
+The Java service uses the OpenTelemetry Java agent for automatic HTTP tracing
+and the application uses a backend-neutral telemetry boundary with
+`CsLoggers`, `CsTracers`, and `CsSpans`. The current adapter is
+`OpenTelemetryTelemetry`; Jaeger and Tempo remain Collector destinations rather
+than application-level SDK dependencies. This keeps common logging and tracing
+functions reusable when another backend is added later.
+
+The Java source files are named `CsLoggers.java`, `CsTracers.java`, and
+`CsSpans.java` (the Java naming-safe equivalents of `cs-loggers.java`,
+`cs-tracers.java`, and `cs-spans.java`).
+
+The TypeScript telemetry boundary follows the same SOLID structure with
+`cs-loggers.ts`, `cs-tracers.ts`, `cs-spans.ts`, and `cs-telemetry.ts`. The
+current `OpenTelemetry*` classes are adapters; Todo and Auth depend only on the
+`Cs*` interfaces. A future Jaeger-specific, vendor SDK, or another telemetry
+backend can be added as a new adapter without changing business code.
+
+The Java code creates a manual `todo.config.read` span with attributes such as
+`app.operation`, `todo.source`, and `todo.count`. Its OTLP exporters point to
+the Collector at `http://collector:4318`; traces are sent to both Jaeger and
+Tempo, while OpenTelemetry logs are sent through the Collector to Loki.
+
+The Java service randomly returns between 1 and `TODO_MAX_ITEMS` items from
+the configured list. The application enforces an absolute maximum of 5 items,
+even if the configuration contains 100 or more Todo values. To change the
+configured Todo list or the runtime limit, update `TODO_DATA_JSON` and
+`TODO_MAX_ITEMS` in `compose/compose.yaml` and recreate the services:
+
+```bash
+docker compose -f compose/compose.yaml up -d --build java-todo todo
+```
+
+Test the Java API directly:
+
+```bash
+curl 'http://localhost:8082/api/todos'
+curl 'http://localhost:8082/v3/api-docs'
+```
+
+The Java span records `todo.available_count`, `todo.returned_count`,
+`todo.max_items`, and `todo.selection=random` so the random behavior can be
+verified in Jaeger or Tempo.
+
+## Unit tests
+
+### Java
+
+Run the Java unit tests from the Java service directory:
+
+```bash
+cd java-todo-service
+mvn test
+```
+
+Run a clean test and generate the JaCoCo coverage report:
+
+```bash
+mvn clean test
+```
+
+The HTML coverage report is generated at:
+
+```text
+java-todo-service/target/site/jacoco/index.html
+```
+
+### TypeScript
+
+TypeScript currently has no Jest or Vitest unit-test framework configured.
+Run the available TypeScript validation from the TypeScript source directory:
+
+```bash
+cd app-versions/code
+npm install
+npm run typecheck
+```
+
+`npm run typecheck` validates the TypeScript types but does not execute unit
+tests. A TypeScript unit-test framework, such as Vitest or Jest, can be added
+later when unit tests are introduced for the service and telemetry modules.
+
+Return to the repository root after running the checks:
+
+```bash
+cd ../..
+```
 
 Application metrics are exported through OTLP to the Collector. The Collector
 exposes them for Prometheus on `collector:8889`, using the `opentelemetry`

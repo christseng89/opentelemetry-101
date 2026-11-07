@@ -8,20 +8,14 @@ import { BatchLogRecordProcessor } from '@opentelemetry/sdk-logs';
 import { PeriodicExportingMetricReader } from '@opentelemetry/sdk-metrics';
 import { NodeSDK } from '@opentelemetry/sdk-node';
 import { BatchSpanProcessor, ParentBasedSampler } from '@opentelemetry/sdk-trace';
-import { getMeter } from './metrics';
-import { OTelLogger } from './logger';
-import { SpanManager } from './spans';
-import { getTracer } from './tracer';
+import { createOpenTelemetry } from './opentelemetry-telemetry';
+import type { CsTelemetry } from './cs-telemetry';
 import { OurSampler } from '../ourSampler';
 
-const collectorEndpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT ?? 'http://collector:4318';
+const collectorEndpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT
+    ?? [process.env.OTEL_COLLECTOR_PROTOCOL ?? 'http', process.env.OTEL_COLLECTOR_HOST ?? 'collector:4318'].join('://');
 
-export interface TelemetryRuntime {
-    meter: ReturnType<typeof getMeter>;
-    spans: SpanManager;
-    logger: OTelLogger;
-    shutdown(): Promise<void>;
-}
+export type TelemetryRuntime = CsTelemetry;
 
 export function initializeTelemetry(serviceName: string): TelemetryRuntime {
     const sdk = new NodeSDK({
@@ -63,10 +57,5 @@ export function initializeTelemetry(serviceName: string): TelemetryRuntime {
 
     sdk.start();
 
-    return {
-        meter: getMeter(serviceName),
-        spans: new SpanManager(getTracer(serviceName)),
-        logger: new OTelLogger(serviceName),
-        shutdown: () => sdk.shutdown(),
-    };
+    return createOpenTelemetry(serviceName, () => sdk.shutdown());
 }

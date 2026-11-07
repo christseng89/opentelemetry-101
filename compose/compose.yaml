@@ -10,9 +10,11 @@ services:
       - NODE_ENV=production
       - OTEL_PROMETHEUS_PORT=9464
       - OTEL_PROPAGATORS=tracecontext,baggage
+      - REDIS_URL=redis://redis:6379
     depends_on:
       - auth
       - java-todo
+      - redis
   auth:
     build: 
       context: ../app-versions/code

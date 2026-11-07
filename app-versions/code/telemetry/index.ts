@@ -5,3 +5,4 @@ export type { CsHistogram, CsMetrics } from './cs-metrics';
 export type { CsSpan, CsSpanOperation, CsAttributes } from './cs-spans';
 export type { CsTelemetry } from './cs-telemetry';
 export type { CsTracer } from './cs-tracers';
+export type { CsRedis, CsRedisFactory } from './cs-redis';

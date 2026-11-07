@@ -2,6 +2,8 @@ import { OTLPLogExporter } from '@opentelemetry/exporter-logs-otlp-proto';
 import { OTLPMetricExporter } from '@opentelemetry/exporter-metrics-otlp-proto';
 import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-proto';
 import { getNodeAutoInstrumentations } from '@opentelemetry/auto-instrumentations-node';
+import { RedisInstrumentation } from '@opentelemetry/instrumentation-redis';
+import { IORedisInstrumentation } from '@opentelemetry/instrumentation-ioredis';
 import { resourceFromAttributes } from '@opentelemetry/resources';
 import { ATTR_SERVICE_NAME } from '@opentelemetry/semantic-conventions';
 import { BatchLogRecordProcessor } from '@opentelemetry/sdk-logs';
@@ -43,7 +45,12 @@ export function initializeTelemetry(serviceName: string): TelemetryRuntime {
         ],
         instrumentations: [getNodeAutoInstrumentations({
             '@opentelemetry/instrumentation-fs': { enabled: false },
-        })],
+            '@opentelemetry/instrumentation-ioredis': { enabled: false },
+            '@opentelemetry/instrumentation-redis': { enabled: false },
+        }),
+            new RedisInstrumentation({ requireParentSpan: false }),
+            new IORedisInstrumentation({ requireParentSpan: false }),
+        ],
         autoDetectResources: true,
         resource: resourceFromAttributes({
             [ATTR_SERVICE_NAME]: serviceName,

@@ -176,6 +176,36 @@ The application uses the OpenTelemetry Logs API, so error logs include
 `trace_id` and `span_id` fields that allow Grafana Tempo and Loki to be
 correlated.
 
+Redis auto-instrumentation is enabled for the Node.js `redis` client. The
+backend-neutral `CsRedis` interface is defined in
+`app-versions/code/telemetry/cs-redis.ts`. The application depends only on
+that abstraction; the OpenTelemetry adapters are implemented in
+`opentelemetry-redis.ts` and `opentelemetry-ioredis.ts`. Each `GET /todos`
+request executes a Redis `PING` through both clients, so the resulting
+distributed trace includes `redis-PING` and ioredis `ping` child spans. It also
+executes `HSET`, `HGET`, and `HDEL` through both clients, producing the
+corresponding Redis command spans. The Collector sends all spans to Jaeger and
+Tempo. Redis itself is also monitored
+by `redis-exporter`, but the exporter provides Prometheus metrics only; Redis
+trace spans come from the instrumented application clients.
+
+To verify the Redis span, generate a request and copy the returned trace ID:
+
+```bash
+curl -i 'http://localhost:8081/todos'
+```
+
+Search for that trace ID in [Jaeger](http://localhost:16686) or Grafana
+Explore with the Tempo data source. The trace should contain a Redis `PING`
+spans below the Node Todo request span. This makes it possible to compare the
+two client instrumentation implementations while viewing the same trace in
+Jaeger and Tempo.
+
+After the Java Todo request completes, the TypeScript service creates a
+`java-to-do-completed` span with `peer.service`, `todo.count`, and
+`completion.status=completed` attributes. This provides an explicit handoff
+point for querying the downstream Java operation in Jaeger or Tempo.
+
 The Todo service creates a manual request span through the shared `CsTracer`
 in `app-versions/code/telemetry/cs-tracers.ts`. It includes HTTP and business
 attributes such as `http.request.method`, `http.route`, `url.path`, and

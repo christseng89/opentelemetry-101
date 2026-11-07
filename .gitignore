@@ -2,3 +2,5 @@ node_modules
 java-todo-service/target/
 .vscode
 backup/**
+.env
+.scannerwork/

@@ -6,7 +6,10 @@ COPY package.json package-lock.json ./
 
 RUN npm ci --omit=optional
 
-COPY . .
+COPY *.ts ./
+COPY telemetry ./telemetry
+
+USER node
 
 EXPOSE 8080
 

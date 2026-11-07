@@ -12,7 +12,8 @@ import { createOpenTelemetry } from './opentelemetry-telemetry';
 import type { CsTelemetry } from './cs-telemetry';
 import { OurSampler } from '../ourSampler';
 
-const collectorEndpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT ?? 'http://collector:4318';
+const collectorEndpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT
+    ?? [process.env.OTEL_COLLECTOR_PROTOCOL ?? 'http', process.env.OTEL_COLLECTOR_HOST ?? 'collector:4318'].join('://');
 
 export type TelemetryRuntime = CsTelemetry;
 

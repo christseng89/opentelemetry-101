@@ -235,6 +235,50 @@ The Java span records `todo.available_count`, `todo.returned_count`,
 `todo.max_items`, and `todo.selection=random` so the random behavior can be
 verified in Jaeger or Tempo.
 
+## Unit tests
+
+### Java
+
+Run the Java unit tests from the Java service directory:
+
+```bash
+cd java-todo-service
+mvn test
+```
+
+Run a clean test and generate the JaCoCo coverage report:
+
+```bash
+mvn clean test
+```
+
+The HTML coverage report is generated at:
+
+```text
+java-todo-service/target/site/jacoco/index.html
+```
+
+### TypeScript
+
+TypeScript currently has no Jest or Vitest unit-test framework configured.
+Run the available TypeScript validation from the TypeScript source directory:
+
+```bash
+cd app-versions/code
+npm install
+npm run typecheck
+```
+
+`npm run typecheck` validates the TypeScript types but does not execute unit
+tests. A TypeScript unit-test framework, such as Vitest or Jest, can be added
+later when unit tests are introduced for the service and telemetry modules.
+
+Return to the repository root after running the checks:
+
+```bash
+cd ../..
+```
+
 Application metrics are exported through OTLP to the Collector. The Collector
 exposes them for Prometheus on `collector:8889`, using the `opentelemetry`
 scrape job. Prometheus also scrapes operational metrics from Redis through

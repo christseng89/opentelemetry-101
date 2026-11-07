@@ -1,6 +1,5 @@
 import { SpanStatusCode, trace, type Tracer } from '@opentelemetry/api';
-import type { CsAttributes, CsSpanOperation } from './cs-spans';
-import type { CsSpan } from './cs-spans';
+import type { CsAttributes, CsSpan, CsSpanOperation } from './cs-spans';
 import type { CsTracer } from './cs-tracers';
 import { OpenTelemetrySpan } from './opentelemetry-span';
 

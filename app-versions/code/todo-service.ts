@@ -5,6 +5,12 @@ import express from 'express';
 import axios from 'axios';
 import { context, propagation } from "@opentelemetry/api";
 const app = express();
+app.disable('x-powered-by');
+
+const authServiceUrl = process.env.AUTH_SERVICE_URL
+    ?? [process.env.AUTH_SERVICE_PROTOCOL ?? 'http', process.env.AUTH_SERVICE_HOST ?? 'auth:8080'].join('://');
+const javaTodoServiceUrl = process.env.JAVA_TODO_SERVICE_URL
+    ?? [process.env.JAVA_TODO_SERVICE_PROTOCOL ?? 'http', process.env.JAVA_TODO_SERVICE_HOST ?? 'java-todo:8080'].join('://');
 
 const calls = metrics.histogram('http-calls');
 
@@ -38,12 +44,12 @@ app.get('/todos', async (req, res) => {
             })
             const contextWithBaggage = propagation.setBaggage(context.active(), baggage);
             await context.with(contextWithBaggage, async () => {
-                const user = await axios.get('http://auth:8080/auth');
+                const user = await axios.get(`${authServiceUrl}/auth`);
                 const todos = await tracer.run('Fetch todos from Java service', async (span) => {
                     const headers: Record<string, string> = {};
                     propagation.inject(context.active(), headers);
                     span.setAttribute('traceparent.injected', Boolean(headers.traceparent));
-                    const response = await axios.get('http://java-todo:8080/api/todos', { headers });
+                    const response = await axios.get(`${javaTodoServiceUrl}/api/todos`, { headers });
                     span.setAttribute('todo.count', response.data.length);
                     return response.data;
                 }, {

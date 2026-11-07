@@ -15,6 +15,8 @@ import java.util.concurrent.ThreadLocalRandom;
 @Service
 public class TodoService {
     private static final TypeReference<List<TodoItem>> TODO_LIST_TYPE = new TypeReference<>() {};
+    private static final String READ_CONFIGURED_TODOS = "read-configured-todos";
+    private static final String APP_OPERATION = "app.operation";
 
     private final ObjectMapper objectMapper;
     private final TodoProperties properties;
@@ -28,11 +30,11 @@ public class TodoService {
 
     public List<TodoItem> listTodos() {
         try (CsSpans span = telemetry.tracers().start("todo.config.read", java.util.Map.of(
-                "app.operation", "read-configured-todos",
+                APP_OPERATION, READ_CONFIGURED_TODOS,
                 "todo.source", "TODO_DATA_JSON"))) {
             try {
                 List<TodoItem> configuredTodos = objectMapper.readValue(properties.dataJson(), TODO_LIST_TYPE);
-                int maxItems = Math.min(Math.max(properties.maxItems(), 1), 5);
+                int maxItems = Math.clamp(properties.maxItems(), 1, 5);
                 int returnedCount = configuredTodos.isEmpty()
                         ? 0
                         : ThreadLocalRandom.current().nextInt(1, Math.min(maxItems, configuredTodos.size()) + 1);
@@ -47,7 +49,7 @@ public class TodoService {
                 span.setAttribute("todo.selection", "random");
                 span.markOk();
                 telemetry.loggers().info("Loaded configured Todo items", java.util.Map.of(
-                        "app.operation", "read-configured-todos",
+                        APP_OPERATION, READ_CONFIGURED_TODOS,
                         "todo.available_count", configuredTodos.size(),
                         "todo.returned_count", todos.size(),
                         "todo.max_items", maxItems));
@@ -57,7 +59,7 @@ public class TodoService {
                 span.setAttribute("error.type", exception.getClass().getName());
                 span.markError("Invalid TODO_DATA_JSON");
                 telemetry.loggers().error("Unable to load configured Todo items", exception, java.util.Map.of(
-                        "app.operation", "read-configured-todos"));
+                        APP_OPERATION, READ_CONFIGURED_TODOS));
                 throw new IllegalStateException("TODO_DATA_JSON must be a JSON array of todo objects", exception);
             }
         }

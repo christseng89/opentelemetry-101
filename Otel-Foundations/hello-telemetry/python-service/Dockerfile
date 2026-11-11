@@ -17,4 +17,12 @@ COPY . .
 EXPOSE 5000
 
 # Define the command to run the application
-CMD [ "python", "compute.py"]
+
+# OTEL environment variables
+ENV OTEL_SERVICE_NAME=ht-python-service
+ENV OTEL_EXPORTER_OTLP_ENDPOINT=http://ht-otel-collector:4317
+ENV OTEL_EXPORTER_OTLP_PROTOCOL=grpc
+ENV OTEL_TRACES_EXPORTER=otlp
+
+# Run the application with OpenTelemetry instrumentation
+CMD [ "opentelemetry-instrument", "python", "compute.py"]

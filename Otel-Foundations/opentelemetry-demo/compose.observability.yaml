@@ -83,7 +83,8 @@ services:
           memory: 200M
     restart: unless-stopped
     ports:
-      - "${PROMETHEUS_PORT}:${PROMETHEUS_PORT}"
+    # Change Prometheus port to 9092 to avoid conflict with Kafka on 9090
+      - "9092:${PROMETHEUS_PORT}"
     logging:
       driver: "json-file"
       options:

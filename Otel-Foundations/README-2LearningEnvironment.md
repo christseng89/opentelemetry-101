@@ -304,4 +304,6 @@ The following are available when the observability stack is running (i.e., not i
 - **OpAMP UI:** http://localhost:8080/opamp/
 - **Chatbot (agentic mode):** http://localhost:8080/chatbot/
 
+> Due to a known Jaeger issue, Grafana’s Jaeger search functionality is not working. However, retrieving a trace by its trace ID works correctly.
+
 ---

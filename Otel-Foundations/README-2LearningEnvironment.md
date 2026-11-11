@@ -28,7 +28,6 @@ docker --version
 java --version
 mvn --version
 python --version
-git clone https://github.com/open-telemetry/opentelemetry-demo.git
 
 cd Otel-Foundations
 git clone https://github.com/brainbsod/hello-telemetry.git
@@ -267,3 +266,21 @@ Important issues to improve:
 - The MySQL credentials are hard-coded and should be externalized for production.
 
 ---
+
+# OpenTelemetry Demo
+
+- <https://opentelemetry.io/docs/demo/>
+- <https://opentelemetry.io/docs/demo/docker-deployment/>
+- <https://github.com/open-telemetry/opentelemetry-demo>
+
+## Start the demo
+
+```bash
+cd ../opentelemetry-demo/
+
+docker compose --env-file .env --env-file .env.override \
+  -f compose.yaml -f compose.full.yaml \
+  -f compose.observability.yaml -f compose.extras.yaml \
+  up --force-recreate --remove-orphans --detach
+
+```

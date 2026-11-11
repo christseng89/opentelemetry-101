@@ -8,3 +8,5 @@ TEST.md
 # Maven build output
 **/target/**
 **/*.war
+# External OpenTelemetry demo clone
+# /Otel-Foundations/opentelemetry-demo/

@@ -4,3 +4,4 @@ java-todo-service/target/
 backup/**
 .env
 .scannerwork/
+TEST.md

@@ -1,0 +1,40 @@
+- generic [active] [ref=e1]:
+  - generic:
+    - generic:
+      - generic:
+        - banner [ref=e2]:
+          - generic [ref=e3]:
+            - menu [ref=e4]:
+              - menuitem [ref=e5] [cursor=pointer]:
+                - link "Jaeger Logo Jaeger" [ref=e7]:
+                  - /url: /
+                  - img "Jaeger Logo" [ref=e8]
+                  - generic [ref=e9]: Jaeger
+              - menuitem [ref=e10] [cursor=pointer]:
+                - link "Search" [ref=e12]:
+                  - /url: /search
+              - menuitem [ref=e13] [cursor=pointer]:
+                - link "Compare" [ref=e15]:
+                  - /url: /trace/...
+              - menuitem [ref=e16] [cursor=pointer]:
+                - link "System Architecture" [ref=e18]:
+                  - /url: /dependencies
+              - menuitem [ref=e19] [cursor=pointer]:
+                - link "Monitor" [ref=e21]:
+                  - /url: /monitor
+              - menuitem [disabled]
+            - menu [ref=e22]:
+              - menuitem [ref=e23] [cursor=pointer]:
+                - textbox "Lookup by Trace ID..." [ref=e30]
+              - menuitem "About Jaeger" [ref=e32] [cursor=pointer]
+              - menuitem [ref=e37] [cursor=pointer]:
+                - button "Toggle color mode" [ref=e39]
+        - main [ref=e42]:
+          - generic [ref=e43]:
+            - generic [ref=e46]:
+              - tablist [ref=e47]:
+                - generic [ref=e49]:
+                  - tab "Search" [selected] [ref=e51] [cursor=pointer]
+                  - tab "Upload" [ref=e53] [cursor=pointer]
+              - tabpanel "Search" [ref=e56]
+            - img "presentation" [ref=e60]

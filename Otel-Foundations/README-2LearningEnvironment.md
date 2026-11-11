@@ -84,6 +84,8 @@ Start the learning environment from the `Otel-Foundations` directory:
 
 ```bash
 cd Otel-Foundations/hello-telemetry/
+
+bash build.sh 
 docker compose up --build -d
 docker compose ps
 ```
@@ -109,6 +111,9 @@ for i in {1..10}; do
     http://localhost:8085/MyWebApp/results
 done
 ```
+
+Open [Jaeger](http://localhost:16686), search for the configured Tomcat service `ht-tomcat`, and inspect the generated trace.
+
 ### Direct Python service test
 
 ```bash
@@ -134,10 +139,131 @@ for i in {1..10}; do
 done
 ```
 
-Open [Jaeger](http://localhost:16686), search for the configured Tomcat service, and inspect the generated trace.
+Open [Jaeger](http://localhost:16686), search for the configured Tomcat service `ht-python-service`, and inspect the generated trace.
 
 To stop the environment:
 
 ```bash
 docker compose down
 ```
+
+## Architecture
+
+- Docker Compose 會將 init.sql 掛載到 MySQL 的初始化目錄，MySQL 首次建立資料庫時執行它，用來建立資料庫、資料表與初始資料。
+- Java/Tomcat 應用程式執行 JDBC 查詢時，OpenTelemetry Java Agent 會觀測這些資料庫操作。
+- Python service 負責計算平均年齡（average age），並透過 OpenTelemetry 產生 trace/span。
+
+> 注意：只有在 mysql_data volume 為空、第一次初始化時才會自動執行。
+
+```text
+Service & Operation
+
+ht-tomcat  GET /MyWebApp/results
+└─ ht-tomcat  SELECT mydatabase.mytable
+   └─ ht-tomcat  POST
+      └─ ht-python-service  POST /compute_average_age
+
+```
+
+```mermaid
+
+flowchart TD
+    client["HTTP Client"]
+
+    subgraph JVM["Java Virtual Machine (JVM)"]
+        direction TB
+        http["Handle HTTP<br/>Requests"]
+        code["Custom Code"]
+        dbconn["Database<br/>Connection"]
+
+        http -->|dispatch| code
+        code -->|query / update| dbconn
+        code -->|response| http
+    end
+
+    subgraph PY["Python-Service"]
+        direction LR
+        library["library"]
+        pycode["Custom<br/>code"]
+
+        library <--> pycode
+    end
+
+    db[("Database")]
+    docker["Docker"]
+
+    client -->|HTTP request| http
+    http -->|HTTP response| client
+
+    dbconn <-->|read / write| db
+    library <-->|HTTP / service calls| http
+
+    JVM -.->|runs in| docker
+    PY -.->|runs in| docker
+    db -.->|runs in| docker
+
+    classDef service fill:#a62a94,stroke:#d9e5ee,stroke-width:2px,color:#fff
+    classDef code fill:#102b49,stroke:#d9e5ee,stroke-width:2px,color:#fff
+    classDef runtime fill:#176481,stroke:#143d51,stroke-width:2px,color:#fff
+    classDef infra fill:#2488dc,stroke:#2349a5,stroke-width:2px,color:#fff
+
+    class http,library,dbconn service
+    class code,pycode code
+    class JVM,PY runtime
+    class db,docker infra
+
+    linkStyle default stroke:#FFFFFF,stroke-width:3px,color:#FFFFFF
+
+
+```
+---
+
+## Hello Telemetry Summary
+
+- **MySQL**
+  - MySQL runs as `ht-mysql`.
+  - `init.sql` is mounted through `/docker-entrypoint-initdb.d`.
+  - It creates the database, tables, and initial data only when `mysql_data` is initialized for the first time.
+
+- **Java/Tomcat**
+  - Runs as `ht-tomcat`.
+  - The WAR file is copied into Tomcat.
+  - The OpenTelemetry Java Agent provides **Auto Instrumentation** for:
+    - HTTP/Servlet requests
+    - **JDBC/MySQL queries**
+    - HTTP calls to the Python service
+  - `MyServlet.java` does not contain Manual Instrumentation.
+
+- **Python service**
+  - Runs as `ht-python-service`.
+  - Receives database records and calculates the average age.
+  - The Python code shown has no Manual Instrumentation.
+  - It uses Auto Instrumentation only if its Dockerfile starts the service with `opentelemetry-instrument`.
+
+- **OpenTelemetry Collector**
+  - Receives OTLP traces on port `4317` or `4318`.
+  - Exports telemetry according to `otel-collector-config.yaml`.
+
+- **Jaeger**
+  - Displays traces through the Jaeger UI.
+
+Overall flow:
+
+```text
+Client
+  → Java/Tomcat
+  → MySQL query
+  → Python average-age service
+  → OpenTelemetry Collector
+  → Jaeger
+```
+
+Important issues to improve:
+
+- `depends_on` controls startup order but not service readiness.
+- Java should close JDBC resources with try-with-resources.
+- Java should handle Python’s HTTP `400` response when no data exists.
+- Python should validate missing or invalid JSON safely.
+- The MySQL credentials are hard-coded and should be externalized for production.
+
+---

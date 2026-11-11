@@ -11,7 +11,10 @@
 services:
   # Jaeger
   jaeger:
-    image: ${JAEGERTRACING_IMAGE}
+    # Grafana's Jaeger datasource still uses the legacy /api/traces search
+    # API. Jaeger 2.21 removed that endpoint; pin 2.20 until the datasource
+    # is migrated to Jaeger's /api/v3 query API.
+    image: quay.io/jaegertracing/jaeger:2.20.0
     container_name: jaeger
     command:
       - "--config=file:/etc/jaeger/config.yml"

@@ -454,6 +454,27 @@ flowchart LR
 | 技術 | 4 | Envoy、Nginx、Kafka、Valkey |
 | 通訊協定 | 3 | HTTP、gRPC、TCP |
 
+## Kafka
+
+| Service | Span / Operation | Kafka 動作 |
+|---|---|---|
+| `checkout` | `publish orders` | Publish / Producer |
+| `accounting` | `order-consumed` | Consume / Consumer |
+| `fraud-detection` | Kafka consumer operation | Consume / Consumer |
+
+簡化流程：
+
+```text
+checkout
+  └─ publish orders       Producer
+
+accounting
+  └─ order-consumed       Consumer
+
+fraud-detection
+  └─ Kafka consumer       Consumer
+```
+
 ---
 
 # OpenTelemetry Demo 通过 `http://localhost:8080` 暴露瀏覽器的 URL

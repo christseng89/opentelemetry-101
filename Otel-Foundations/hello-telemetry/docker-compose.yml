@@ -24,7 +24,21 @@ services:
       - "${JMX_PORT}:9010"
       - "${JMX_RMI_PORT}:1099"
     environment:
-      - JAVA_OPTS=-Dcom.sun.management.jmxremote -Dcom.sun.management.jmxremote.port=${JMX_PORT} -Dcom.sun.management.jmxremote.rmi.port=${JMX_RMI_PORT} -Dcom.sun.management.jmxremote.authenticate=false -Dcom.sun.management.jmxremote.ssl=false -Djava.rmi.server.hostname=localhost
+      # JMX is optional and is independent of OpenTelemetry.
+      # OTEL
+      JAVA_OPTS: >-
+        -Dcom.sun.management.jmxremote
+        -Dcom.sun.management.jmxremote.port=${JMX_PORT}
+        -Dcom.sun.management.jmxremote.rmi.port=${JMX_RMI_PORT}
+        -Dcom.sun.management.jmxremote.authenticate=false
+        -Dcom.sun.management.jmxremote.ssl=false
+        -Djava.rmi.server.hostname=localhost
+      # The Java agent is installed in the image; runtime-specific OTel
+      # settings belong here so Kubernetes can provide different values.
+      JAVA_TOOL_OPTIONS: "-javaagent:/opt/opentelemetry-javaagent.jar"
+      OTEL_SERVICE_NAME: "ht-tomcat"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://ht-otel-collector:4317"
+      OTEL_EXPORTER_OTLP_PROTOCOL: "grpc"
     depends_on:
       - ht-mysql
       - ht-python-service

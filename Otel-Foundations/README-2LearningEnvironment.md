@@ -281,7 +281,7 @@ cd ../opentelemetry-demo/
 docker compose --env-file .env --env-file .env.override \
   -f compose.yaml -f compose.full.yaml \
   -f compose.observability.yaml -f compose.extras.yaml \
-   -f compose.agent.yaml  -f compose.profiling.yaml \
+  -f compose.agent.yaml  \
   up --force-recreate --remove-orphans --detach
 
 ```
@@ -559,5 +559,17 @@ Grafana、Jaeger、OpAMP、Chatbot 和 Profiles 需要使用包含 observability
 - 🛢️ 圓柱：Database/Redis span
 - `setAttribute()`、`recordException()`、`setStatus()`、`addEvent()`：補充或修改既有 span
 - `Span.current()`：取得目前的 active span，不會建立新 span，也不會自行修改 span
+
+---
+
+# 建議分工
+
+| 資料 | 建議方式 |
+|---|---|
+| `trace_id`、`span_id` | 使用 OpenTelemetry Context 傳遞 |
+| **少量** request metadata | 使用 Baggage，但必須驗證 |
+| 訂單資料 | 放在 Kafka message payload |
+| Session / 使用者資料 | Redis 儲存，其他服務唯讀 |
+| Trace 關聯資訊 | 透過 HTTP/gRPC metadata 或 Kafka headers |
 
 ---

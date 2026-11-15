@@ -1,4 +1,3 @@
-#　Instrumentations
 
 ## About Telemetry
 
@@ -327,4 +326,36 @@ git clone --branch 2.2.0 --depth 1 https://github.com/open-telemetry/opentelemet
 - Java <https://opentelemetry.io/docs/languages/java/>
 - Python <https://opentelemetry.io/docs/languages/python/>
 
+---
+## **Recap**
+
+### **1. About OpenTelemetry**
+
+- Open-source alternative for observability data collection.
+
+### **2. Instrumentation**
+
+- Process of adding measurement capabilities to a system.
+- Zero-code, code-based, and library-based.
+
+### **3. APIs & SDKs**
+
+- **API** = Application Program Interface → Entry Point
+- **SDK** = Software Development Kit → Full Code
+
+### **4. Zero-code Instrumentation**
+
+- Agent-based instrumentation.
+- No need to manually modify application code (agent takes care of it).
+- Instruments supported libraries/code.
+- OpenTelemetry eBPF Instrumentation.
+
+> Zero-code Instrumentation automatically generates telemetry using agents, language-specific auto-instrumentation, or eBPF, without requiring modifications to application source code.
+
+### **5. Code-based Instrumentation**
+
+- Manual instrumentation utilizing APIs & SDKs.
+- More control and flexibility.
+
+> Application → OTel API → OTel SDK → OTLP Exporter → OTel Collector → Backend
 ---

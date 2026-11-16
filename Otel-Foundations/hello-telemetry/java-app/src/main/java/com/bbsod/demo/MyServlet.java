@@ -39,13 +39,13 @@ import io.opentelemetry.exporter.otlp.metrics.OtlpGrpcMetricExporter;
 
 public class MyServlet extends HttpServlet {
 
-    // Define Class Fields - Metrics
+    // Code based instrumentation - Metrics
     private static final String INSTRUMENTATION_NAME = MyServlet.class.getName();
     private final LongCounter requestCounter;
 
     // Constructor
     public MyServlet() {
-        // OpenTelemetry Initialization Metrics
+        // Code based instrumentation - Metrics
         OpenTelemetry openTelemetry = initOpenTelemetry();
         Meter meter = openTelemetry.getMeter(INSTRUMENTATION_NAME);
         this.requestCounter = meter.counterBuilder("app.db.db_requests")
@@ -53,7 +53,7 @@ public class MyServlet extends HttpServlet {
                 .build();
     }
 
-    // Opentelemetry Initialization SDK
+    // Code based instrumentation - Metrics
     static OpenTelemetry initOpenTelemetry() {
 
         // Set up the resource with service.name
@@ -120,7 +120,7 @@ public class MyServlet extends HttpServlet {
             String query = "SELECT * FROM mytable";
             ResultSet resultSet = statement.executeQuery(query);
 
-            // Increment the Metric - request counter
+            // Code based instrumentation - Metrics
             requestCounter.add(1);
 
             // Build web page

@@ -95,3 +95,17 @@ docker compose up --build -d
 
 - <http://localhost:8085/MyWebApp/>
 - Docker Container <ht-otel-collector> -> Name: app.db.db_requests
+
+---
+## Python - Metrics
+
+```bash
+cd ../python-service/
+pip install -r requirements.txt
+
+cd ..
+docker compose up --build -d
+```
+
+- <http://localhost:8085/MyWebApp/>
+- Docker Container <ht-otel-collector> -> Name: app_compute_request_count

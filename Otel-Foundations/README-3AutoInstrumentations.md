@@ -1,5 +1,5 @@
 
-## About Telemetry
+# **About Telemetry**
 
 - Opensource alternative to collect Observability data
 - Generates, Collects & Exports Telemetry data

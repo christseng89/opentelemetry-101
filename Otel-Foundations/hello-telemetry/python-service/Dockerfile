@@ -13,7 +13,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Discover installed Python packages and install their OpenTelemetry
 # instrumentation libraries (for example, Flask instrumentation).
-RUN opentelemetry-bootstrap -a install
+# RUN opentelemetry-bootstrap -a install
 
 # Copy the rest of the application code into the container
 COPY . .
@@ -24,11 +24,12 @@ EXPOSE 5000
 # Define the command to run the application
 
 # OTEL environment variables
-ENV OTEL_SERVICE_NAME=ht-python-service
-ENV OTEL_EXPORTER_OTLP_ENDPOINT=http://ht-otel-collector:4317
-ENV OTEL_EXPORTER_OTLP_PROTOCOL=grpc
-ENV OTEL_TRACES_EXPORTER=otlp
-ENV OTEL_PYTHON_LOG_CORRELATION=true
+# ENV OTEL_SERVICE_NAME=ht-python-service
+# ENV OTEL_EXPORTER_OTLP_ENDPOINT=http://ht-otel-collector:4317
+# ENV OTEL_EXPORTER_OTLP_PROTOCOL=grpc
+# ENV OTEL_TRACES_EXPORTER=otlp
+# ENV OTEL_PYTHON_LOG_CORRELATION=true
 
 # Run the application with OpenTelemetry zero-code instrumentation
-CMD [ "opentelemetry-instrument", "python", "compute.py"]
+# CMD [ "opentelemetry-instrument", "python", "compute.py"]
+CMD [ "python", "compute.py"]

@@ -109,3 +109,433 @@ docker compose up --build -d
 
 - <http://localhost:8085/MyWebApp/>
 - Docker Container <ht-otel-collector> -> Name: app_compute_request_count
+
+--- 
+
+# Hands-on Metrics - **OpenTelemetry Demo** - Data Analysis
+
+```bash
+cd ..
+docker compose down
+
+cd ../opentelemetry-demo
+
+docker compose --env-file .env --env-file .env.override \
+  -f compose.yaml -f compose.full.yaml \
+  -f compose.observability.yaml -f compose.extras.yaml \
+  -f compose.agent.yaml  \
+  up -d
+
+```
+- Prometheus <http://localhost:9092/query> => demo_***
+    - demo_ad_requests_total
+
+```text
+demo_ad_requests_total
+demo_ad_served_total
+demo_cart_add_item_latency_seconds_bucket
+demo_cart_add_item_latency_seconds_count
+demo_cart_add_item_latency_seconds_sum
+demo_cart_get_cart_latency_seconds_bucket
+demo_cart_get_cart_latency_seconds_count
+demo_cart_get_cart_latency_seconds_sum
+demo_exchange_conversions_counter_total
+demo_notification_confirmations_total
+demo_payment_transactions_total
+demo_recommendation_requests_total
+demo_shipping_items_shipped_total
+demo_tool_calls_total
+quotes_total
+```
+
+- Locust http://localhost:8080/loadgen/ 
+    - Locust 是這個 OpenTelemetry Demo 的「流量產生器／負載測試工具」。
+
+- Grafana http://localhost:8080/grafana
+
+- Shopping http://localhost:8080/
+
+- Jaeger http://localhost:8080/jaeger/ui/ or http://localhost:60498/jaeger/ui/
+
+## Start Hello Telemetry
+```bash
+cd ../hello-telemetry/
+docker compose up -d
+
+```
+
+---
+# **Traces**
+
+- <https://opentelemetry.io/docs/concepts/signals/traces/>
+
+## **How OpenTelemetry collects traces**
+
+- Initialize Tracer Provider ← Factory of Tracers
+- Tracer creates spans
+- Trace exporter sends spans to a consumer
+
+### **Span Information**
+
+- Name
+- Span Context
+- Parent Span ID
+- Start and End Timestamps
+- Attributes
+- Span Events
+- Span Links
+- Span Status
+- Span Kind
+
+### **Traces Collection Architecture**
+
+```
+Application
+    │
+    ▼
+Tracer Provider
+    │
+    ▼
+Tracer
+    │
+    ├── Span 1
+    ├── Span 2
+    └── Span 3
+          │
+          ▼
+    Trace Exporter
+```
+
+---
+
+# Span Information
+
+> OpenTelemetry 將 Span 定義為 Trace 中的一個有時間範圍的操作。[OpenTelemetry Traces 官方文件](https://opentelemetry.io/docs/concepts/signals/traces/)
+
+| Span 資訊 | 實際範例 | 說明 |
+|---|---|---|
+| **Name** | `POST /api/checkout` | 表示目前執行的操作，例如處理結帳請求。 |
+| **Span Context** | `trace_id=4bf92f3577b34da6a3ce929d0e0e4736`<br>`span_id=00f067aa0ba902b7`<br>`trace_flags=01` | 識別目前 Span 並連結整個分散式 Trace。Span Context 通常包含 Trace ID、Span ID、Trace Flags 和 Trace State，且不可修改。 |
+| **Parent Span ID** | `parent_span_id=7a1c5e9b2d4f8a10` | 表示哪一個 Span 呼叫了目前的 Span，例如前端 Proxy。 |
+| **Start and End Timestamps** | 開始：`2026-11-17T10:15:30.120Z`<br>結束：`2026-11-17T10:15:30.245Z` | 表示結帳操作花費 125 毫秒。 |
+| **Attributes** | `http.request.method=POST`<br>`url.path=/api/checkout`<br>`http.response.status_code=200`<br>`order.item_count=2` | 描述操作的鍵值資料。不要記錄密碼、信用卡號等敏感資訊。 |
+| **Span Events** | `checkout.validation.completed`<br>`exception: PaymentDeclinedException` | Span 執行期間發生的時間點事件，例如付款失敗或快取未命中。 |
+| **Span Links** | 連結至 Kafka 訊息的 Span Context：`trace_id=9f8e7d6c...` | 將目前 Span 連結到另一個沒有直接父子關係的 Span，常用於非同步訊息或批次處理。 |
+| **Span Status** | `ERROR`<br>`status.message="Payment was declined"` | 表示操作結果。正式狀態值為 `UNSET`、`OK` 和 `ERROR`。 |
+| **Span Kind** | `SERVER` | 表示此服務接收並處理外部傳入的請求。 |
+
+## Span Status
+
+Span Status 用來表示操作結果。正式狀態值為 `UNSET`、`OK` 和 `ERROR`；`UNSET` 不一定代表操作失敗。
+
+| Span Status | 中文 | 實際情境 | 範例 |
+|---|---|---|---|
+| **`UNSET`** | 未設定 | 沒有明確判定成功或失敗，是 Span 的預設狀態；不一定代表失敗。 | HTTP 請求完成，但程式沒有特別設定 Status。 |
+| **`OK`** | 成功 | 明確表示操作成功完成。 | 付款成功、資料庫查詢成功、訂單建立成功。 |
+| **`ERROR`** | 錯誤 | 表示操作失敗或發生例外。 | HTTP 500、付款被拒絕、資料庫連線失敗。 |
+
+## Span Kind
+一個完整的分散式 Trace 可能如下：
+
+```text
+frontend-proxy       SERVER
+└── checkout-service SERVER
+    ├── payment-api  CLIENT
+    └── accounting    PRODUCER
+        └── accounting-worker CONSUMER
+```
+
+常見的 Span Kind：
+
+- `SERVER`：處理傳入的 HTTP 或 RPC 請求。
+- `CLIENT`：呼叫其他服務或外部系統。
+- `PRODUCER`：發送訊息，例如 Kafka message。
+- `CONSUMER`：接收並處理訊息。
+- `INTERNAL`：服務內部的程式操作，沒有遠端邊界。
+
+---
+
+# Context Propagation（追蹤上下文傳遞）
+
+## 1. Span Propagation
+
+```text
+Service A                       Service B
+Span 1                          Span 2
+   │                               ▲
+   └──── Context Propagation ──────┘
+
+Same Trace ID
+Different Span IDs
+Span 2 Parent Span ID = Span 1 Span ID
+```
+
+## 2. Span Data
+
+- `Context`
+    - **Trace ID**：`trace_id`（整條 Trace 共用）
+    - **Span ID**：`span_id`（每個 Span 獨立）
+    - **Trace Flags**：`flag_value`（例如 Sampling Flag）
+    - **Trace State**：`state_value`（Vendor-specific Trace Context）
+- `Parent Span Id` (span_1_id)
+
+## 3. W3C Trace Context（Default）
+
+HTTP Headers：
+
+- `traceparent`：主要 Trace Context Header
+- `tracestate`：選用，用於額外的 Trace Context
+
+## 4. W3C traceparent（HTTP Header）
+
+- <https://www.w3.org/TR/trace-context/#trace-context-http-headers-format>
+
+**Format:**
+
+```text
+version-trace-id-parent-id-trace-flags
+```
+
+**Example:**
+
+```http
+traceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01
+```
+
+| Field | Example | Description |
+|---|---|---|
+| Version | `00` | W3C Trace Context Version |
+| Trace ID | `4bf92f3577b34da6a3ce929d0e0e4736` | 整條 Trace 共用 |
+| Parent ID | `00f067aa0ba902b7` | 發送端 Span ID |
+| Trace Flags | `01` | Sampled Flag |
+
+---
+
+# Hello Telemetry — OpenTelemetry Context Propagation
+
+## 1. Overview
+
+根據 Jaeger Distributed Trace，系統包含兩個 Services：
+
+- **Java Service（ht-tomcat）**
+  - `GET`：Root Span
+  - `SleepForTwoSeconds`：Child Span
+  - `DatabaseConnection`：Child Span
+  - `ComputeRequest`：Child Span
+- **Python Service（ht-python-service）**
+  - `ComputeSpan`：Java `ComputeRequest` 的 Child Span
+
+### Jaeger Trace Summary
+
+| Item | Value |
+|---|---|
+| Root Service | `ht-tomcat` |
+| Root Operation | `GET` |
+| Services | 2 |
+| Total Spans | 5 |
+| Maximum Span Depth | 3 |
+| Trace Duration | 2.04 seconds |
+
+以上顯示 Java 和 Python 的 Spans 屬於同一條 Distributed Trace，並建立了跨服務的 Parent-Child Relationship。
+
+## 2. Context Propagation Architecture
+
+```mermaid
+flowchart TB
+    ROOT["ht-tomcat: GET<br/>Trace ID: T100<br/>Span ID: S0"]
+
+    subgraph JAVA["Java Service — ht-tomcat"]
+        direction TB
+        S1["SleepForTwoSeconds<br/>Span ID: S1"]
+        S2["DatabaseConnection<br/>Span ID: S2"]
+        S3["ComputeRequest<br/>Span ID: S3"]
+    end
+
+    subgraph PYTHON["Python Service — ht-python-service"]
+        S4["ComputeSpan<br/>Span ID: S4"]
+    end
+
+    ROOT -->|"Parent Context"| S1
+    ROOT -->|"Parent Context"| S2
+    ROOT -->|"Parent Context"| S3
+
+    S3 -->|"Cross-Service Context Propagation<br/>Trace ID: T100<br/>Parent ID: S3"| S4
+
+    classDef root fill:#176B52,stroke:#6EE7B7,color:#fff
+    classDef java fill:#2563EB,stroke:#93C5FD,color:#fff
+    classDef python fill:#9333EA,stroke:#D8B4FE,color:#fff
+
+    class ROOT root
+    class S1,S2,S3 java
+    class S4 python
+```
+
+> `T100`、`S0`～`S4` 為示意 ID。實際 W3C Trace ID 為 32 個十六進位字元，Span ID 為 16 個十六進位字元。
+
+## 3. Span Context and Parent-Child Relationships
+
+| Service | Span | Trace ID | Span ID | Parent Span ID |
+|---|---|---|---|---|
+| Java | `GET` | T100 | S0 | None |
+| Java | `SleepForTwoSeconds` | T100 | S1 | S0 |
+| Java | `DatabaseConnection` | T100 | S2 | S0 |
+| Java | `ComputeRequest` | T100 | S3 | S0 |
+| Python | `ComputeSpan` | T100 | S4 | S3 |
+
+**Key Observations:**
+
+- **Same Trace ID**：所有 Spans 使用同一個 Trace ID（T100）。
+- **Unique Span IDs**：每個 Span 都有自己的 Span ID。
+- **Java Sibling Spans**：`SleepForTwoSeconds`、`DatabaseConnection` 和 `ComputeRequest` 的 Parent 都是 `GET`。
+- **Cross-Service Child Span**：Python 的 `ComputeSpan` 以 Java 的 `ComputeRequest` 作為 Parent。
+- **Span Depth = 3**：`GET → ComputeRequest → ComputeSpan`。
+
+> Sibling Spans 不代表一定平行執行。它們也可能依序執行，但具有相同 Parent Span。
+
+## 4. How Does Context Propagation Work?
+
+### 4.1 Within Java Service
+
+Java Service 透過 OpenTelemetry Context 管理目前 Active Span。
+
+當 `GET` 是 Active Span 時，建立：
+
+- `SleepForTwoSeconds`
+- `DatabaseConnection`
+- `ComputeRequest`
+
+這三個 Spans 都可以繼承 `GET` 的 Context，形成 Parent-Child Relationships。
+
+同一個 Java Process 內通常不需要使用 HTTP Headers 傳遞 Context。
+
+### 4.2 Between Java and Python Services
+
+當 Java `ComputeRequest` 呼叫 Python Service 時：
+
+1. Java 從目前 Active Span 取得 Span Context。
+2. OTel Propagator 將 Context 注入 HTTP Request Headers。
+3. Python 從 HTTP Headers 提取 Trace Context。
+4. Python 使用提取的 Context 建立 `ComputeSpan`。
+5. Python `ComputeSpan` 保持相同 Trace ID，但產生新的 Span ID。
+
+**W3C Trace Context 使用：**
+
+- `traceparent`：主要 Trace Context Header。
+- `tracestate`：選用 Header，用於附加 Trace Context 資訊。
+
+## 5. W3C traceparent HTTP Header
+
+### Format
+
+```text
+version-trace-id-parent-id-trace-flags
+```
+
+### Example
+
+```http
+traceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01
+```
+
+| Field | Example | Meaning |
+|---|---|---|
+| Version | `00` | W3C Trace Context Version |
+| Trace ID | `4bf92f3577b34da6a3ce929d0e0e4736` | 跨 Java / Python 保持相同 |
+| Parent ID | `00f067aa0ba902b7` | 發送端目前 Active Span 的 Span ID |
+| Trace Flags | `01` | Sampled Flag |
+
+在本範例中，如果 Java 在 `ComputeRequest` 內直接注入 Context，則 `parent-id` 對應 Java `ComputeRequest` 的 Span ID。
+
+Python 建立 `ComputeSpan` 時，會將這個 ID 作為自己的 Parent Span ID。
+
+> 若 HTTP Auto-Instrumentation 額外建立 HTTP CLIENT / SERVER Spans，實際的 Parent Span ID 可能對應 HTTP CLIENT Span，而不是 `ComputeRequest`。應以 Jaeger 中實際顯示的 Span Hierarchy 與 Span Context 為準。
+
+## 6. Distributed Trace Hierarchy
+
+```mermaid
+flowchart TB
+    ROOT["ht-tomcat<br/>GET"]
+
+    S1["SleepForTwoSeconds"]
+    S2["DatabaseConnection"]
+    S3["ComputeRequest"]
+    S4["ht-python-service<br/>ComputeSpan"]
+
+    ROOT --> S1
+    ROOT --> S2
+    ROOT --> S3
+    S3 -->|"Context Propagation"| S4
+
+    classDef root fill:#176B52,stroke:#6EE7B7,color:#fff
+    classDef java fill:#2563EB,stroke:#93C5FD,color:#fff
+    classDef python fill:#9333EA,stroke:#D8B4FE,color:#fff
+
+    class ROOT root
+    class S1,S2,S3 java
+    class S4 python
+```
+
+## 7. Conclusion
+
+OpenTelemetry Context Propagation 讓不同 Services 的 Spans 可以形成同一條 Distributed Trace。
+
+- **Trace ID**：識別整條 Trace。
+- **Span ID**：識別個別 Span。
+- **Parent Span ID**：建立 Span 之間的 Parent-Child Relationship。
+- **Context Propagation**：將 Trace Context 從 Java 傳遞到 Python。
+- **Jaeger**：透過 Trace Hierarchy 呈現跨服務呼叫關係。
+
+**本範例的核心結果：**
+
+`Java GET → Java ComputeRequest → Python ComputeSpan`
+
+這條路徑證明 Java 與 Python 的 Spans 已正確關聯在同一條 Distributed Trace。
+
+---
+
+
+# Hands on Traces and Context Propagation for `Hello Telemetry`
+
+- Update `MyServlet.java`
+- Update `compute.py`
+
+```bash
+bash build.sh
+docker compose up --build -d
+```
+
+- http://localhost:16686/api/traces/b0c61326a6c439f752945d866417f08b
+
+```json
+{ "traceID": "b0c61326a6c439f752945d866417f08b",
+    "spans": [
+    {
+        "traceID": "b0c61326a6c439f752945d866417f08b",
+        "spanID": "a1dd96d7a6fe434c",
+        "operationName": "SleepForTwoSeconds",
+        "references": [
+        {
+            "refType": "CHILD_OF",
+            "traceID": "b0c61326a6c439f752945d866417f08b",
+            "spanID": "d6b2b31b3259dd51"
+        }
+        ],
+        ...
+    }
+  ]
+},
+...
+{
+    "traceID": "b0c61326a6c439f752945d866417f08b",
+    "spanID": "964fc27efa08e78d",
+    "operationName": "ComputeSpan",
+    "references": [
+    {
+        "refType": "CHILD_OF",
+        "traceID": "b0c61326a6c439f752945d866417f08b",
+        "spanID": "fdd8834ed68847ca"
+    }
+    ]
+}
+```
+---

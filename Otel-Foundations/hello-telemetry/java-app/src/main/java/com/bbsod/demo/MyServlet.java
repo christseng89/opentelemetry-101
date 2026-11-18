@@ -29,19 +29,32 @@ import io.opentelemetry.sdk.OpenTelemetrySdk;
 import io.opentelemetry.sdk.metrics.SdkMeterProvider;
 import io.opentelemetry.sdk.metrics.export.PeriodicMetricReader;
 import io.opentelemetry.sdk.resources.Resource;
+import io.opentelemetry.sdk.trace.SdkTracerProvider;
+import io.opentelemetry.sdk.trace.export.SimpleSpanProcessor;
+import io.opentelemetry.api.GlobalOpenTelemetry;
 // OpenTelemetry API
 import io.opentelemetry.api.OpenTelemetry;
 import io.opentelemetry.api.common.AttributeKey;
 import io.opentelemetry.api.common.Attributes;
 import io.opentelemetry.api.metrics.LongCounter;
 import io.opentelemetry.api.metrics.Meter;
+import io.opentelemetry.api.trace.Span;
+import io.opentelemetry.api.trace.SpanKind;
+import io.opentelemetry.api.trace.Tracer;
+import io.opentelemetry.api.trace.propagation.W3CTraceContextPropagator;
+import io.opentelemetry.context.Context;
+import io.opentelemetry.context.Scope;
+// import io.opentelemetry.context.propagation.TextMapPropagator;
 import io.opentelemetry.exporter.otlp.metrics.OtlpGrpcMetricExporter;
+import io.opentelemetry.exporter.otlp.trace.OtlpGrpcSpanExporter;
 
 public class MyServlet extends HttpServlet {
 
     // Code based instrumentation - Metrics
     private static final String INSTRUMENTATION_NAME = MyServlet.class.getName();
     private final LongCounter requestCounter;
+    // Code based instrumentation - Traces
+    private final Tracer tracer;
 
     // Constructor
     public MyServlet() {
@@ -51,6 +64,9 @@ public class MyServlet extends HttpServlet {
         this.requestCounter = meter.counterBuilder("app.db.db_requests")
                 .setDescription("Count DB requests")
                 .build();
+        // Code based instrumentation - Traces
+        this.tracer = openTelemetry.getTracer(INSTRUMENTATION_NAME);
+
     }
 
     // Code based instrumentation - Metrics
@@ -74,8 +90,22 @@ public class MyServlet extends HttpServlet {
                 .registerMetricReader(periodicMetricReader)
                 .build();
 
+        // Traces
+        OtlpGrpcSpanExporter otlpGrpcSpanExporter = OtlpGrpcSpanExporter.builder()
+                .setEndpoint("http://ht-otel-collector:4317")
+                .build();
+
+        SimpleSpanProcessor simpleSpanProcessor = SimpleSpanProcessor.builder(otlpGrpcSpanExporter).build();
+
+        SdkTracerProvider tracerProvider = SdkTracerProvider.builder()
+                .setResource(resource)
+                .addSpanProcessor(simpleSpanProcessor)
+                .build();
+
         OpenTelemetrySdk sdk = OpenTelemetrySdk.builder()
                 .setMeterProvider(sdkMeterProvider)
+                // Code based instrumentation - Traces
+                .setTracerProvider(tracerProvider)
                 .build();
 
         // Cleanup
@@ -93,12 +123,38 @@ public class MyServlet extends HttpServlet {
         PrintWriter out = response.getWriter();
         response.setContentType("text/html");
 
+        // Code based instrumentation - Context Propagation
+        Span parentSpan = tracer.spanBuilder("GET")
+                .setNoParent()
+                .startSpan();
+        parentSpan.makeCurrent();
+
+        Context parentContext = Context.current().with(parentSpan);
+
+        // Code based instrumentation - Traces
+        // Span to capture sleep
+        Span sleepSpan = tracer.spanBuilder("SleepForTwoSeconds")
+                .setSpanKind(SpanKind.INTERNAL)
+                // Context propagation - set the parent context for the sleep span
+                .setParent(parentContext)
+                .startSpan();
         // Sleep for 2 seconds
         try {
             Thread.sleep(2000);
         } catch (InterruptedException e) {
             e.printStackTrace();
+            // Code based instrumentation - Traces
+        } finally {
+            sleepSpan.end();
         }
+
+        // Start Database Span
+        Span dbSpan = tracer.spanBuilder("DatabaseConnection")
+                .setSpanKind(SpanKind.CLIENT)
+                // Context propagation - set the parent context for the database span
+                .setParent(parentContext)
+                .startSpan();
+        // Code based instrumentation - Traces end
 
         // JDBC connection parameters
         String jdbcUrl = "jdbc:mysql://ht-mysql:3306/mydatabase";
@@ -153,17 +209,35 @@ public class MyServlet extends HttpServlet {
         } catch (Exception e) {
             e.printStackTrace();
             out.println("<h2>Error: " + e.getMessage() + "</h2>");
+            // Code based instrumentation - Traces
+        } finally {
+            dbSpan.end();
         }
+        parentSpan.end();
+        // Code based instrumentation - Traces end
 
         // Make a request to the Python microservice
-        String averageAge = getAverageAge(dataList);
+        // Code based instrumentation - Traces
+        String averageAge = getAverageAge(dataList, parentContext);
         out.println("<h2>Average Age: " + averageAge + "</h2>");
         out.println("</body></html>");
 
     }
 
-    private String getAverageAge(List<JSONObject> dataList) throws IOException {
-        try (CloseableHttpClient httpClient = HttpClients.createDefault()) {
+    private String getAverageAge(List<JSONObject> dataList, Context parentContext) throws IOException {
+
+        Span computeSpan = tracer.spanBuilder("ComputeRequest")
+                .setSpanKind(SpanKind.CLIENT)
+                // Context propagation - set the parent context for the compute span
+                .setParent(parentContext)
+                .startSpan();
+
+        // Code based instrumentation - Context Propagation to the Python microservice
+        Context context = Context.current().with(computeSpan);
+
+        try (Scope scope = computeSpan.makeCurrent();
+                // Code based instrumentation - Traces end
+                CloseableHttpClient httpClient = HttpClients.createDefault()) {
             HttpPost httpPost = new HttpPost("http://ht-python-service:5000/compute_average_age");
             httpPost.setHeader("Content-Type", "application/json");
 
@@ -173,10 +247,19 @@ public class MyServlet extends HttpServlet {
             StringEntity entity = new StringEntity(requestData.toString());
             httpPost.setEntity(entity);
 
+            // Inject the context into the HTTP request headers using
+            // W3CTraceContextPropagator
+            // Code based instrumentation - Context Propagation to the Python microservice
+            W3CTraceContextPropagator propagator = W3CTraceContextPropagator.getInstance();
+            propagator.inject(context, httpPost, HttpPost::setHeader);
+
             String responseString = httpClient.execute(httpPost,
                     response -> EntityUtils.toString(response.getEntity()));
             JSONObject responseJson = new JSONObject(responseString);
             return responseJson.get("average_age").toString();
+            // Code based instrumentation - Traces
+        } finally {
+            computeSpan.end();
         }
     }
 }

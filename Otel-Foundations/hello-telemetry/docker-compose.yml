@@ -35,10 +35,11 @@ services:
         -Djava.rmi.server.hostname=localhost
       # The Java agent is installed in the image; runtime-specific OTel
       # settings belong here so Kubernetes can provide different values.
-      # JAVA_TOOL_OPTIONS: "-javaagent:/opt/opentelemetry-javaagent.jar"
-      # OTEL_SERVICE_NAME: "ht-tomcat"
-      # OTEL_EXPORTER_OTLP_ENDPOINT: "http://ht-otel-collector:4317"
-      # OTEL_EXPORTER_OTLP_PROTOCOL: "grpc"
+      # Zero-code instrumentation is enabled by the presence of the Java agent.
+      JAVA_TOOL_OPTIONS: "-javaagent:/opt/opentelemetry-javaagent.jar"
+      OTEL_SERVICE_NAME: "ht-tomcat"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://ht-otel-collector:4317"
+      OTEL_EXPORTER_OTLP_PROTOCOL: "grpc"
     depends_on:
       - ht-mysql
       - ht-python-service

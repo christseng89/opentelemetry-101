@@ -63,6 +63,8 @@
             <artifactId>opentelemetry-api-incubator</artifactId>
             <version>1.67.0-alpha</version>
         </dependency>
+        <!-- Zero code instrumentation is enabled by the Java agent, so you don't need to add the SDK or exporter dependencies to your application. If you want to use code-based instrumentation, you can uncomment the following dependencies. -->
+        <!--
         <dependency>
             <groupId>io.opentelemetry</groupId>
             <artifactId>opentelemetry-sdk</artifactId>
@@ -73,6 +75,7 @@
             <artifactId>opentelemetry-exporter-otlp</artifactId>
             <version>1.67.0</version>
         </dependency>
+        -->
         <!-- Logs -->
         <dependency>
             <groupId>org.slf4j</groupId>

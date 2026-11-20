@@ -856,3 +856,16 @@ docker compose up --build -d
 
 ---
 
+# Hands-on - Zero-code + Code-based Instrumentations - hello-telemetry
+
+## Java
+- Update `docker-compose.yaml`, `pom.xml`, and `MyServlet.java`
+
+## Python
+- Update `requirements.txt`, and `compute.py`
+
+```bash
+bash build.sh
+docker compose up --build -d
+```
+---

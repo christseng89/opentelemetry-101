@@ -31,7 +31,7 @@ import io.opentelemetry.sdk.metrics.export.PeriodicMetricReader;
 import io.opentelemetry.sdk.resources.Resource;
 import io.opentelemetry.sdk.trace.SdkTracerProvider;
 import io.opentelemetry.sdk.trace.export.SimpleSpanProcessor;
-import io.opentelemetry.api.GlobalOpenTelemetry;
+// import io.opentelemetry.api.GlobalOpenTelemetry;
 // OpenTelemetry API
 import io.opentelemetry.api.OpenTelemetry;
 import io.opentelemetry.api.common.AttributeKey;
@@ -48,6 +48,14 @@ import io.opentelemetry.context.Scope;
 import io.opentelemetry.exporter.otlp.metrics.OtlpGrpcMetricExporter;
 import io.opentelemetry.exporter.otlp.trace.OtlpGrpcSpanExporter;
 
+// Logs
+import java.util.logging.Logger;
+import io.opentelemetry.sdk.logs.SdkLoggerProvider;
+import io.opentelemetry.sdk.logs.export.BatchLogRecordProcessor;
+import io.opentelemetry.exporter.otlp.logs.OtlpGrpcLogRecordExporter;
+import io.opentelemetry.instrumentation.logback.appender.v1_0.OpenTelemetryAppender;
+import org.slf4j.bridge.SLF4JBridgeHandler;
+
 public class MyServlet extends HttpServlet {
 
     // Code based instrumentation - Metrics
@@ -55,6 +63,8 @@ public class MyServlet extends HttpServlet {
     private final LongCounter requestCounter;
     // Code based instrumentation - Traces
     private final Tracer tracer;
+    // Logs
+    private static final java.util.logging.Logger julLogger = Logger.getLogger("jul-logger");
 
     // Constructor
     public MyServlet() {
@@ -66,6 +76,14 @@ public class MyServlet extends HttpServlet {
                 .build();
         // Code based instrumentation - Traces
         this.tracer = openTelemetry.getTracer(INSTRUMENTATION_NAME);
+
+        // Logs
+        // Install SLF4JBridgeHandler to route JUL logs to SLF4J
+        SLF4JBridgeHandler.removeHandlersForRootLogger();
+        SLF4JBridgeHandler.install();  
+              
+        // Install OpenTelemetry in logback appender
+        OpenTelemetryAppender.install(openTelemetry);        
 
     }
 
@@ -102,10 +120,25 @@ public class MyServlet extends HttpServlet {
                 .addSpanProcessor(simpleSpanProcessor)
                 .build();
 
+        // Logs
+        OtlpGrpcLogRecordExporter otlpGrpcLogRecordExporter = OtlpGrpcLogRecordExporter.builder()
+                .setEndpoint("http://ht-otel-collector:4317")
+                .build();
+
+        BatchLogRecordProcessor batchLogRecordProcessor = BatchLogRecordProcessor.builder(otlpGrpcLogRecordExporter)
+                .build();
+
+        SdkLoggerProvider loggerProvider = SdkLoggerProvider.builder()
+                .setResource(resource)
+                .addLogRecordProcessor(batchLogRecordProcessor)
+                .build();
+
         OpenTelemetrySdk sdk = OpenTelemetrySdk.builder()
                 .setMeterProvider(sdkMeterProvider)
                 // Code based instrumentation - Traces
                 .setTracerProvider(tracerProvider)
+                // Logs
+                .setLoggerProvider(loggerProvider)
                 .build();
 
         // Cleanup
@@ -162,6 +195,8 @@ public class MyServlet extends HttpServlet {
         String jdbcPassword = "mypassword";
 
         try {
+            // Logs
+            julLogger.info("DB Connection initiated");
             // Load MySQL JDBC Driver
             Class.forName("com.mysql.cj.jdbc.Driver");
 
@@ -201,12 +236,19 @@ public class MyServlet extends HttpServlet {
             }
             out.println("</table>");
         } catch (ClassNotFoundException e) {
-            System.out.println("MySQL JDBC Driver not found.");
+            // Logs
+            julLogger.severe("MySQL JDBC Driver not found.");
+            // System.out.println("MySQL JDBC Driver not found.");
             e.printStackTrace();
         } catch (SQLException e) {
-            System.out.println("Connection failed.");
+            // Logs
+            julLogger.severe("Database connection failed.");
+            // System.out.println("Connection failed.");
             e.printStackTrace();
         } catch (Exception e) {
+            // Logs
+            julLogger.severe("An error occurred: " + e.getMessage());
+            // System.out.println("An error occurred: " + e.getMessage());
             e.printStackTrace();
             out.println("<h2>Error: " + e.getMessage() + "</h2>");
             // Code based instrumentation - Traces
@@ -221,6 +263,8 @@ public class MyServlet extends HttpServlet {
         String averageAge = getAverageAge(dataList, parentContext);
         out.println("<h2>Average Age: " + averageAge + "</h2>");
         out.println("</body></html>");
+        // Logs
+        julLogger.info("Response sent to client");
 
     }
 
@@ -238,6 +282,8 @@ public class MyServlet extends HttpServlet {
         try (Scope scope = computeSpan.makeCurrent();
                 // Code based instrumentation - Traces end
                 CloseableHttpClient httpClient = HttpClients.createDefault()) {
+            // Logs
+            julLogger.info("Request to Python microservice");
             HttpPost httpPost = new HttpPost("http://ht-python-service:5000/compute_average_age");
             httpPost.setHeader("Content-Type", "application/json");
 

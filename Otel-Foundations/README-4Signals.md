@@ -539,3 +539,291 @@ docker compose up --build -d
 }
 ```
 ---
+
+# Logs
+
+- Official Documentation: https://opentelemetry.io/docs/concepts/signals/logs/
+
+## 1. OpenTelemetry Logging Objective
+
+- Support existing logs and logging libraries.
+- Integrate logging with OpenTelemetry without replacing existing logging frameworks.
+- Standardize log records using the OpenTelemetry Log Data Model.
+- Enable correlation between Logs and Traces using Trace ID and Span ID.
+
+## 2. Supported Logging Libraries
+
+| Language | Logging Libraries |
+|---|---|
+| **Java** | Log4j, SLF4J, Logback |
+| **.NET** | Log4net, NLog, Serilog |
+| **JavaScript / Node.js** | Log4js, Winston, Pino |
+| **Go** | Logrus, Zap |
+| **Python** | Logging, Loguru |
+
+**Note:** Integration capabilities and maturity vary by language, library, and OpenTelemetry instrumentation version.
+
+## 3. OpenTelemetry Logging
+
+- Provides **Logs API and SDK**, primarily designed for integration with existing logging libraries.
+- **Enhances existing logs with correlation data**, such as Trace ID, Span ID, and Trace Flags.
+- Provides capabilities to receive, process, and export log data to a consumer or backend server.
+- Supports integration through **Log Appenders / Bridges** without requiring applications to replace existing logging libraries.
+
+### 3.1 Example 1: Original Log
+
+```text
+2024-08-08 18:59:25 - oteldemo.AdService - Targeted ad request received for [travel]
+```
+
+### 3.2 Example 2: Log with OpenTelemetry Correlation
+
+```text
+2024-08-08 18:59:25 - oteldemo.AdService - Targeted ad request received for [travel]
+trace_id=f9cc0f59ce50d371ed73ba00b4d2019e
+span_id=0fdc4062b3732f51
+trace_flags=01
+```
+
+**Key Point:** OpenTelemetry enables existing application logs to be correlated with distributed traces using `trace_id` and `span_id`.
+
+**Note:** Trace correlation fields are available when appropriate logging instrumentation or context enrichment is configured. They are not automatically added to every log in every language.
+
+---
+
+## 4. OpenTelemetry Logging Architecture — Log Appender / Bridge
+
+Existing Logging Libraries can integrate with OpenTelemetry through **Log Appenders / Bridges**, allowing log records to follow the OpenTelemetry Logs API / SDK pipeline.
+
+### 4.1 Logging Architecture
+
+```mermaid
+flowchart TB
+    APP["Application"]
+    LIB["Existing Logging Library<br/>Logback / Winston / Python Logging"]
+
+    subgraph OTEL["OpenTelemetry Logs API / SDK"]
+        direction TB
+
+        BR["Log Appender / Bridge"]
+        LP["LoggerProvider"]
+        LG["OTel Logger"]
+        LR["OTel LogRecord<br/>Standard Data Model"]
+        PROC["LogRecordProcessor"]
+        EXP["OTLP LogRecordExporter"]
+
+        LP -->|"Creates"| LG
+        BR -->|"Emits via"| LG
+        LG --> LR
+        LR --> PROC
+        PROC --> EXP
+    end
+
+    COL["OpenTelemetry Collector"]
+    LOKI["Grafana Loki<br/>Log Backend"]
+    GRAF["Grafana UI"]
+
+    APP --> LIB
+    LIB --> BR
+    EXP -->|"OTLP"| COL
+    COL -->|"Supported Log Export / OTLP"| LOKI
+    LOKI -->|"LogQL Queries"| GRAF
+
+    classDef app fill:#2563EB,stroke:#93C5FD,color:#fff
+    classDef bridge fill:#EA580C,stroke:#FDBA74,color:#fff
+    classDef sdk fill:#166534,stroke:#86EFAC,color:#fff
+    classDef data fill:#7C3AED,stroke:#C4B5FD,color:#fff
+    classDef export fill:#0891B2,stroke:#67E8F9,color:#fff
+
+    class APP,LIB app
+    class BR bridge
+    class LP,LG,PROC sdk
+    class LR data
+    class EXP,COL,LOKI,GRAF export
+
+    style OTEL fill:#F0FDF4,stroke:#16A34A,stroke-width:2px,color:#166534
+```
+
+**Architecture Explanation:**
+
+1. The application generates logs through an existing Logging Library.
+2. A Log Appender / Bridge converts or maps existing log records into OpenTelemetry LogRecords.
+3. The OpenTelemetry Logger, obtained from a LoggerProvider, emits LogRecords.
+4. A LogRecordProcessor processes and optionally batches the records.
+5. The LogRecordExporter exports logs using OTLP.
+6. The OpenTelemetry Collector receives, processes, and forwards logs.
+7. Loki stores and indexes logs, while Grafana provides visualization and querying.
+
+**Important:** The OpenTelemetry Log Data Model defines the structure of LogRecords. It is not a standalone processing component.
+
+### 4.2 Components and Responsibilities
+
+| Component | Responsibility |
+|---|---|
+| **Logging Library** | Generates application logs, e.g., Logback, Winston. |
+| **Log Appender / Bridge** | Integrates existing logging records with the OpenTelemetry Logs API. |
+| **LoggerProvider** | Creates and manages OTel Loggers. |
+| **Logger** | Emits OTel LogRecords. |
+| **OTel LogRecord** | Represents a log using the standard OpenTelemetry Log Data Model. |
+| **LogRecordProcessor** | Processes and optionally batches LogRecords before export. |
+| **LogRecordExporter** | Exports LogRecords to a Collector or backend. |
+| **OTel Collector** | Receives, processes, and forwards log telemetry. |
+| **Grafana Loki** | Stores and enables querying of logs. |
+| **Grafana UI** | Visualizes logs and correlates them with traces. |
+
+### 4.3 Real-World Java Example
+
+```text
+Java Application
+    ↓
+SLF4J + Logback
+    ↓
+OpenTelemetry Logback Appender
+    ↓
+OTel Logger (from LoggerProvider)
+    ↓
+OTel LogRecord
+    ↓
+LogRecordProcessor
+    ↓
+OTLP LogRecordExporter
+    ↓
+OpenTelemetry Collector
+    ↓
+Grafana Loki
+    ↓
+Grafana UI
+```
+
+### 4.4 Alternative — Collect Existing Log Files / stdout
+
+OpenTelemetry can also collect existing application logs without requiring an in-process Log Appender / Bridge.
+
+```mermaid
+flowchart TB
+    APP["Application"]
+    LOG["stdout / Log Files"]
+    AGENT["Log Collection Agent<br/>e.g., OTel Collector"]
+    COL["OTel Collector Pipeline"]
+    LOKI["Grafana Loki"]
+    GRAF["Grafana UI"]
+
+    APP --> LOG
+    LOG --> AGENT
+    AGENT --> COL
+    COL --> LOKI
+    LOKI --> GRAF
+
+    classDef app fill:#2563EB,color:#fff
+    classDef collector fill:#0D9488,color:#fff
+    classDef backend fill:#7C3AED,color:#fff
+
+    class APP,LOG app
+    class AGENT,COL collector
+    class LOKI,GRAF backend
+```
+
+In this model:
+
+- Existing applications continue writing logs to files or stdout.
+- A collection agent reads and forwards the logs.
+- The Collector processes the records and exports them to Loki.
+- Trace ID and Span ID correlation requires those identifiers to be included in the logs or enriched through an appropriate integration.
+
+**Note:** The collection agent and Collector pipeline may be part of the same Collector deployment. Loki ingestion must use a supported exporter or OTLP endpoint.
+
+---
+
+## 5. Key Differences Between the Two Logging Approaches
+
+| Comparison | Log Appender / Bridge | stdout / File Collection |
+|---|---|---|
+| Integration Location | Inside Application Runtime | Outside Application |
+| Existing Logging Library | Reused | Reused |
+| OTel Logs SDK in Application | Usually required | Not required |
+| Log Collection | OTel SDK → OTLP | Agent / Collector |
+| Trace Correlation | Through Context-aware logging integration | Requires Trace / Span IDs in log content |
+| Application Changes | Configuration / dependencies may be required | Often only collection configuration |
+| Kubernetes Deployment | Application instrumentation | DaemonSet / Agent / Collector |
+
+## 6. Conclusion
+
+OpenTelemetry provides **Logs API, Logs SDK, Log Appenders / Bridges, and standardized Log Data Models** to integrate existing logging frameworks with observability backends.
+
+Two common approaches are:
+
+**Approach A — Application-level Appender Integration**
+
+`Logging Library → OTel Appender / Bridge → OTel Logs SDK → OTLP Exporter → Collector → Loki → Grafana`
+
+**Approach B — Infrastructure-level Collection**
+
+`Application stdout / Files → Collection Agent → OTel Collector → Loki → Grafana`
+
+**Recommended Principle:** Continue using existing Logging Libraries where appropriate, standardize log data collection and export through OpenTelemetry, and enable correlation between Logs and Traces using Trace ID and Span ID.
+
+---
+
+# Hands on Java Log Appender 
+
+- <https://github.com/open-telemetry/opentelemetry-java-examples/tree/main/log-appender>
+
+- Update `pom.xml`
+- Create `logback.xml`
+- Update `MyServlet.java`
+
+```java
+// Logs
+// Install SLF4JBridgeHandler to route JUL logs to SLF4J
+SLF4JBridgeHandler.removeHandlersForRootLogger();
+SLF4JBridgeHandler.install();  
+        
+// Install OpenTelemetry in logback appender
+OpenTelemetryAppender.install(openTelemetry);        
+
+more //Logs ...
+```
+
+```bash
+bash build.sh
+docker compose up --build -d
+```
+
+## Logs Architecture
+
+```mermaid
+flowchart TB
+    APP["MyServlet.java"]
+
+    JUL["java.util.logging"]
+    BR["SLF4JBridgeHandler"]
+    SLF["SLF4J API"]
+    LB["Logback Classic"]
+
+    OAPP["OTel Logback Appender"]
+    SDK["OTel Logs SDK<br/>SdkLoggerProvider"]
+    PROC["BatchLogRecordProcessor"]
+    EXP["OtlpGrpcLogRecordExporter"]
+    COL["OTel Collector<br/>ht-otel-collector:4317"]
+
+    APP --> JUL
+    JUL --> BR
+    BR --> SLF
+    SLF --> LB
+    LB --> OAPP
+    OAPP --> SDK
+    SDK --> PROC
+    PROC --> EXP
+    EXP -->|"OTLP/gRPC"| COL
+
+    classDef logging fill:#2563EB,color:#fff
+    classDef bridge fill:#9333EA,color:#fff
+    classDef sdk fill:#059669,color:#fff
+    classDef collector fill:#EA580C,color:#fff
+
+    class APP,JUL,SLF,LB logging
+    class BR,OAPP bridge
+    class SDK,PROC,EXP sdk
+    class COL collector
+
+```

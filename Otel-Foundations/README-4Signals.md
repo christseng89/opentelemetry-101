@@ -827,3 +827,13 @@ flowchart TB
     class COL collector
 
 ```
+
+## Verify Logs
+
+- <http://localhost:8085/MyWebApp/>
+
+```bash
+docker logs -f ht-otel-collector 2>&1   | grep -E 'otelcol.signal.*logs|LogRecord|DB Connection'
+```
+
+- Docker Desktop `ht-otel-collector` => `LogRecord`

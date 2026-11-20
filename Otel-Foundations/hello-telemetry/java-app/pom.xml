@@ -56,6 +56,13 @@
             <artifactId>opentelemetry-api</artifactId>
             <version>1.67.0</version>
         </dependency>
+        <!-- Keep the incubating API aligned with the OpenTelemetry SDK version. -->
+        <!-- the explicit dependency prevents Maven from selecting the older 1.65.0-alpha version transitively -->
+        <dependency>
+            <groupId>io.opentelemetry</groupId>
+            <artifactId>opentelemetry-api-incubator</artifactId>
+            <version>1.67.0-alpha</version>
+        </dependency>
         <dependency>
             <groupId>io.opentelemetry</groupId>
             <artifactId>opentelemetry-sdk</artifactId>
@@ -87,12 +94,7 @@
             <artifactId>logback-core</artifactId>
             <version>1.5.32</version>
         </dependency>
-        <!-- Logs - OpenTelemetry Log4j / Logback appenders -->
-        <!-- <dependency>
-            <groupId>io.opentelemetry.instrumentation</groupId>
-            <artifactId>opentelemetry-log4j-appender-2.17</artifactId>
-            <version>${otel.instrumentation.version}</version>
-        </dependency> -->
+        <!-- Logs - OpenTelemetry Logback appenders -->
         <dependency>
             <groupId>io.opentelemetry.instrumentation</groupId>
             <artifactId>opentelemetry-logback-appender-1.0</artifactId>

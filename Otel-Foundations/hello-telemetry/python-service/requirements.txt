@@ -6,6 +6,6 @@ opentelemetry-distro
 opentelemetry-exporter-otlp
 
 # Code based instrumentation
-# opentelemetry-api
-# opentelemetry-sdk
+opentelemetry-api
+opentelemetry-sdk
 opentelemetry-semantic-conventions

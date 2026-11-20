@@ -764,7 +764,7 @@ Two common approaches are:
 
 ---
 
-# Hands on Java Log Appender 
+# Hands on Java Log Appender for Hello Telemetry
 
 - <https://github.com/open-telemetry/opentelemetry-java-examples/tree/main/log-appender>
 
@@ -837,3 +837,22 @@ docker logs -f ht-otel-collector 2>&1   | grep -E 'otelcol.signal.*logs|LogRecor
 ```
 
 - Docker Desktop `ht-otel-collector` => `LogRecord`
+
+---
+# Hands on Python for Hello Telemetry
+
+- <https://github.com/open-telemetry/opentelemetry-python/tree/main/docs/examples/logs>
+
+- Update `requirements.txt` and `compute.py`
+
+```bash
+docker compose up --build -d
+```
+
+## Verify Logs
+
+- <http://localhost:8085/MyWebApp/>
+- Docker Desktop `ht-otel-collector` => `LogRecord` OR `Computed average age`
+
+---
+

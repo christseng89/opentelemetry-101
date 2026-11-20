@@ -1,7 +1,7 @@
 from flask import Flask, request, jsonify
 
 # OpenTelemetry SDK
-from opentelemetry.sdk.metrics import MeterProvider # Meter
+from opentelemetry.sdk.metrics import MeterProvider  # Meter
 from opentelemetry import metrics, trace
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import OTLPMetricExporter
@@ -13,6 +13,18 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
+
+# Logs
+import logging
+import atexit
+from opentelemetry._logs import set_logger_provider
+from opentelemetry.exporter.otlp.proto.grpc._log_exporter import (
+    OTLPLogExporter,
+)
+
+from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
+from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
+
 
 # Code based instrumentation - Metrics
 resource = Resource.create({ResourceAttributes.SERVICE_NAME: "ht-python-service"})
@@ -39,6 +51,19 @@ tracer_provider.add_span_processor(span_processor)
 trace.set_tracer_provider(tracer_provider)
 tracer = trace.get_tracer(__name__)
 
+# Logs
+log_exporter = OTLPLogExporter(endpoint="http://ht-otel-collector:4317", insecure=True)
+log_processor = BatchLogRecordProcessor(log_exporter)
+logger_provider = LoggerProvider(resource=resource)
+logger_provider.add_log_record_processor(log_processor)
+set_logger_provider(logger_provider)
+handler = LoggingHandler(level=logging.NOTSET, logger_provider=logger_provider)
+
+# Configure logging
+logging.basicConfig(level=logging.NOTSET, handlers=[handler])
+
+# Create namespaced logger
+logger = logging.getLogger()
 
 app = Flask(__name__)
 
@@ -54,21 +79,31 @@ def compute_average_age():
 
     # Code based instrumentation - Traces + Context propagation
     with tracer.start_as_current_span("ComputeSpan", context=context):
+        # Logging
+        logger.info("Received request to compute average age")
         # Process the request data
         data = request.json["data"]
         if not data:
+            # Logging
+            logger.error("No data provided")
             return jsonify({"error": "No data provided"}), 400
 
         # Extract ages from the data
         ages = [item["age"] for item in data if "age" in item]
         if not ages:
+            # Logging
+            logger.error("No age data available")
             return jsonify({"error": "No age data available"}), 400
 
         # Compute the average age
         average_age = round(sum(ages) / len(ages), 1)
 
+        logger.info(f"Computed average age: {average_age}")
         return jsonify({"average_age": average_age})
 
+
+# Logs => Add a shutdown hook to shut down the logger provider
+atexit.register(logger_provider.shutdown)
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)

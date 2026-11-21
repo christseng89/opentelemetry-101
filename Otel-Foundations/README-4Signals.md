@@ -1199,3 +1199,330 @@ docker compose up --build -d
 - Docker Desktop `ht-otel-collector` => 'john_doe'
 
 ---
+## **Profiling**
+
+- **Profiling** – Snapshots of code resource utilization (CPU/Memory)
+- Application-level profiling
+- System-level profiling
+- `opentelemetry-ebpf-profiler`
+- In **public alpha**
+- **Links:**
+  - [https://opentelemetry.io/docs/concepts/signals/profiles/](https://opentelemetry.io/docs/concepts/signals/profiles/?utm_source=chatgpt.com)
+  - [https://github.com/open-telemetry/opentelemetry-ebpf-profiler](https://github.com/open-telemetry/opentelemetry-ebpf-profiler?utm_source=chatgpt.com)
+  - [https://opentelemetry.io/docs/specs/otel/profiles/](https://opentelemetry.io/docs/specs/otel/profiles/?utm_source=chatgpt.com)
+
+---
+## **OpenTelemetry Metrics — Java Code Example**
+
+此範例展示 OpenTelemetry Metrics 的四個主要元件：**Meter Provider → Meter → Metric Instrument → Metric Exporter**。
+
+### **1. Metric Exporter & Meter Provider**
+
+```
+
+OtlpGrpcMetricExporter otlpGrpcMetricExporter =
+    OtlpGrpcMetricExporter.builder()
+        .setEndpoint("http://localhost:4317")
+        .build();
+
+PeriodicMetricReader periodicMetricReader =
+    PeriodicMetricReader.builder(otlpGrpcMetricExporter)
+        .setInterval(java.time.Duration.ofSeconds(5))
+        .build();
+
+SdkMeterProvider sdkMeterProvider =
+    SdkMeterProvider.builder()
+        .registerMetricReader(periodicMetricReader)
+        .build();
+
+```
+
+### **2. Meter & Metric Instrument**
+
+```
+
+public MyServlet(OpenTelemetry openTelemetry) {
+
+    // 2. Meter
+    this.meter = openTelemetry.getMeter(INSTRUMENTATION_NAME);
+
+    // 3. Metric Instrument — Counter
+    this.requestCounter =
+        meter.counterBuilder("app.db.db_requests")
+            .setDescription("Counts DB requests")
+            .build();
+}
+
+```
+
+### **3. Components and Responsibilities**
+
+| Component                | Java API                 | Responsibility            |
+| ------------------------ | ------------------------ | ------------------------- |
+| **1. Meter Provider**    | `SdkMeterProvider`       | 建立與管理 Meters              |
+| **2. Meter**             | `getMeter()`             | 建立 Metric Instruments     |
+| **3. Metric Instrument** | `counterBuilder()`       | 記錄測量值，例如 DB Request Count |
+| **4. Metric Exporter**   | `OtlpGrpcMetricExporter` | 透過 OTLP/gRPC 匯出 Metrics   |
+| **Metric Reader**        | `PeriodicMetricReader`   | 每 5 秒收集並匯出 Metrics        |
+
+### **4. Metrics Collection Architecture**
+
+```mermaid
+
+flowchart TB
+    APP["Java Application"]
+    MP["1. Meter Provider<br/>SdkMeterProvider"]
+    M["2. Meter"]
+    INS["3. Metric Instrument<br/>LongCounter"]
+    READER["PeriodicMetricReader<br/>Every 5 Seconds"]
+    EX["4. Metric Exporter<br/>OTLP/gRPC"]
+    COL["OTel Collector<br/>localhost:4317"]
+
+    APP --> MP
+    MP --> M
+    M --> INS
+    INS -->|"Measurements"| READER
+    MP -.->|"Registers"| READER
+    READER --> EX
+    EX --> COL
+
+    classDef app fill:#17324D,color:#fff
+    classDef provider fill:#2563EB,color:#fff
+    classDef meter fill:#7C3AED,color:#fff
+    classDef instrument fill:#EA580C,color:#fff
+    classDef exporter fill:#059669,color:#fff
+
+    class APP app
+    class MP provider
+    class M meter
+    class INS instrument
+    class READER,EX,COL exporter
+
+```
+
+### **5. Recording a Measurement**
+
+建立 Counter 後，在實際執行 DB Query 時呼叫：
+
+```
+
+requestCounter.add(1);
+
+```
+
+每呼叫一次，Counter 就增加 1。
+
+**重點：** `counterBuilder()` 只建立 Instrument，並不會自動統計 Database Requests。必須由應用程式呼叫 `add(1)`，或使用相應的 Auto-Instrumentation。
+
+另外，`PeriodicMetricReader` 每 5 秒匯出一次是本範例的設定，不代表 Counter 每 5 秒才增加一次。Counter 在 `add(1)` 時就記錄測量值。
+
+## **Metric Instrument Types**
+
+- Counter
+- Asynchronous Counter
+- UpDownCounter (記錄增加或減少多少)
+- Asynchronous UpDownCounter
+- Gauge (記錄目前是多少)
+- Histogram
+
+| 項目     | Gauge        | UpDownCounter |
+| ------ | ------------ | ------------- |
+| 原本數值   | 60           | 60            |
+| 現在數值   | 70           | 70            |
+| API 操作 | `record(70)` | `add(+10)`    |
+| 記錄內容   | 目前值 70       | 增加量 +10       |
+
+---
+## **OpenTelemetry Traces — Java Code Example**
+
+這張圖展示 OpenTelemetry Traces 的四個主要元件：
+
+**Tracer Provider → Tracer → Span → Trace Exporter**
+
+### **1. Trace Exporter & Tracer Provider**
+
+```
+
+// 4. Trace Exporter
+OtlpGrpcSpanExporter otlpGrpcSpanExporter =
+    OtlpGrpcSpanExporter.builder()
+        .setEndpoint("http://localhost:4317")
+        .build();
+
+// 1. Tracer Provider
+SdkTracerProvider sdkTracerProvider =
+    SdkTracerProvider.builder()
+        .addSpanProcessor(
+            SimpleSpanProcessor.create(otlpGrpcSpanExporter)
+        )
+        .build();
+
+```
+
+### **2. Tracer**
+
+```
+
+// 2. Tracer
+this.tracer = openTelemetry.getTracer(INSTRUMENTATION_NAME);
+
+```
+
+### **3. Create a Span**
+
+```
+
+// 3. Span
+Span span = tracer
+    .spanBuilder("initiate database query")
+    .startSpan();
+
+try (Scope scope = span.makeCurrent()) {
+    // Execute database operations
+} finally {
+    span.end();
+}
+
+```
+
+### **4. Components and Responsibilities**
+
+| Component              | Java API                    | Responsibility               |
+| ---------------------- | --------------------------- | ---------------------------- |
+| **1. Tracer Provider** | `SdkTracerProvider`         | 建立與管理 Tracers                |
+| **2. Tracer**          | `getTracer()`               | 建立 Spans                     |
+| **3. Span**            | `spanBuilder().startSpan()` | 記錄操作、Attributes、Events 和執行時間 |
+| **4. Trace Exporter**  | `OtlpGrpcSpanExporter`      | 透過 OTLP/gRPC 匯出 Traces       |
+| **Span Processor**     | `SimpleSpanProcessor`       | 將已結束的 Span 交給 Exporter       |
+
+### **5. Traces Collection Architecture**
+
+```mermaid
+
+flowchart TB
+    APP["Java Application"]
+    TP["1. Tracer Provider<br/>SdkTracerProvider"]
+    TR["2. Tracer"]
+    SP["3. Span<br/>startSpan / end"]
+    PROC["Span Processor<br/>SimpleSpanProcessor"]
+    EX["4. Trace Exporter<br/>OTLP/gRPC"]
+    COL["OpenTelemetry Collector<br/>localhost:4317"]
+    JAEGER["Jaeger / Tempo"]
+
+    APP --> TP
+    TP -->|"Creates"| TR
+    TR -->|"Creates"| SP
+    SP -->|"On Span End"| PROC
+    TP -.->|"Registers"| PROC
+    PROC --> EX
+    EX -->|"OTLP/gRPC"| COL
+    COL --> JAEGER
+
+    classDef app fill:#17324D,color:#fff
+    classDef provider fill:#2563EB,color:#fff
+    classDef tracer fill:#7C3AED,color:#fff
+    classDef span fill:#EA580C,color:#fff
+    classDef exporter fill:#059669,color:#fff
+
+    class APP app
+    class TP provider
+    class TR tracer
+    class SP span
+    class PROC,EX,COL,JAEGER exporter
+
+```
+
+**重點：** `startSpan()` 建立 Span；`end()` 結束 Span，然後由 Span Processor 交給 Exporter 匯出。
+
+另外，`SimpleSpanProcessor` 適合示範；Production 通常建議使用 `BatchSpanProcessor`，降低每個 Span 結束時立即匯出的效能成本。
+
+---
+
+## Span Data
+
+**Name:** `Span 1`
+
+### 1. Span Context
+
+**Span Context** 包含用於 Distributed Tracing 和 Context Propagation 的識別資訊。
+
+- **Trace ID:** `<value>` — 整條 Trace 共用。
+- **Span ID:** `<value>` — 每個 Span 的唯一識別碼。
+- **Trace Flags:** `<value>` — 例如 Sampling Flag。
+- **Trace State:** `<value>` — 選用的追蹤狀態資訊。
+
+**Context Propagation:**
+
+- 同一 Process：透過 OpenTelemetry Context 傳遞。
+- 跨 Services：透過 W3C `traceparent` / `tracestate` Headers 傳遞。
+- 新 Span 保留相同 Trace ID，但產生新的 Span ID。
+
+### 2. Other Span Information
+
+- **Parent Span ID:** `<value>` — 父 Span 的 ID；Root Span 沒有 Parent。
+- **Start Time:** `<time>`
+- **End Time:** `<time>`
+- **Attributes:** Key-Value Pairs
+  - `key1: value1`
+  - `key2: value2`
+- **Events:** Timestamped Events，例如 Exception 或重要處理事件。
+- **Links:** 關聯其他 Span Context，可跨不同 Traces。
+- **Status:** `Unset` | `Ok` | `Error`
+- **Kind:** `SERVER` | `CLIENT` | `INTERNAL` | `PRODUCER` | `CONSUMER`
+
+### 3. W3C Trace Context
+
+**HTTP Headers:**
+
+- `traceparent` — 主要追蹤上下文。
+- `tracestate` — 選用的追蹤狀態。
+
+**traceparent Format:**
+
+```text
+version-trace-id-parent-id-trace-flags
+```
+
+**Important:** `parent-id` 代表發送端目前 Span 的 ID，接收端可使用它建立新的 Parent-Child Relationship。
+
+---
+## **OpenTelemetry Logging — Log Appender / Bridge**
+
+**Enhances existing logs with correlation data (Trace ID, Span ID, etc.).**
+
+### **Components**
+
+- **Logging Library Log Record**
+- **Log Bridge API**
+- **OpenTelemetry Log Data Model**
+- **Log Appender / Bridge**
+  - Logger Provider
+  - Logger
+- **Log Record**
+
+### **Architecture**
+
+```text
+Logging Library Log Record
+            │
+            ├── Log Bridge API(1) ──→ OpenTelemetry Log Data Model
+           (2)                                │
+            ▼                                 ▼
+    Log Appender / Bridge               Log Record
+            │                                 ▲
+            ▼                                 │
+      Logger Provider                         │
+            │                                 │
+            ▼                                 │
+          Logger ─────────────────────────────┘
+```
+
+**Key Point:** The Log Appender / Bridge connects existing logging libraries to OpenTelemetry, allowing logs to be represented using the OpenTelemetry Log Data Model and enriched with trace correlation information.
+
+| 角色 | 誰？ | 主要工作 |
+|---|---|---|
+| **Application Developer** | Java、Python、Node.js 應用程式開發者 | 使用 Logging Library 記錄 Logs |
+| **Logging Library Developer** | Logback、Log4j、Winston 等函式庫的開發者 | 開發及維護 Logging Framework |
+| **OpenTelemetry Instrumentation Developer** | OTel 社群或第三方整合工具開發者 | 開發 Appender / Bridge，將 Logging Library 接入 OTel Logs API |
+
+---

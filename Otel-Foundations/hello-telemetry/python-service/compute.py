@@ -1,5 +1,6 @@
+# Baggage propagation - Import the Baggage API
 from flask import Flask, request, jsonify
-from opentelemetry import metrics, trace
+from opentelemetry import metrics, trace, baggage
 
 # Zero-code instrumentation
 # OpenTelemetry SDK
@@ -27,6 +28,9 @@ from opentelemetry._logs import get_logger_provider
 # )
 
 from opentelemetry.sdk._logs import LoggingHandler
+
+# Baggage propagation
+from opentelemetry.baggage.propagation import W3CBaggagePropagator
 
 # Zero-code instrumentation
 # from opentelemetry.sdk._logs import LoggerProvider
@@ -85,8 +89,15 @@ app = Flask(__name__)
 @app.route("/compute_average_age", methods=["POST"])
 def compute_average_age():
 
+    # Baggage propagation - Extract the baggage from the incoming request headers
+    baggage_ctx = W3CBaggagePropagator().extract(request.headers)
+    baggage_items = baggage.get_all(context=baggage_ctx)
+
+    # Convert Baggage items to a dictionary of attributes
+    attributes = dict(baggage_items)
+
     # Code based instrumentation - Metrics
-    compute_request_count.add(1)
+    compute_request_count.add(1, attributes)
 
     # Code based instrumentation - Context propagation
     # context = TraceContextTextMapPropagator().extract(request.headers)
@@ -95,6 +106,14 @@ def compute_average_age():
     # Zero-code instrumentation
     # with tracer.start_as_current_span("ComputeSpan", context=context):
     with tracer.start_as_current_span("ComputeSpan"):
+        # Baggage propagation - Set the baggage attributes to the current span
+        for key, value in attributes.items():
+            logger_with_attributes = logging.LoggerAdapter(logger, {key: value})
+        logger_with_attributes.info("Average compute in progress")
+
+        current_span = trace.get_current_span()
+        current_span.set_attributes(attributes)
+
         # Logging
         logger.info("Received request to compute average age")
         # Process the request data

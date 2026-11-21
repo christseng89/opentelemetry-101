@@ -62,6 +62,10 @@ import java.util.logging.Logger;
 import io.opentelemetry.instrumentation.logback.appender.v1_0.OpenTelemetryAppender;
 import org.slf4j.bridge.SLF4JBridgeHandler;
 
+// Baggage
+import io.opentelemetry.api.baggage.Baggage;
+import io.opentelemetry.api.baggage.propagation.W3CBaggagePropagator;
+
 public class MyServlet extends HttpServlet {
 
         // Code based instrumentation - Metrics
@@ -76,7 +80,8 @@ public class MyServlet extends HttpServlet {
         public MyServlet() {
                 // Code based instrumentation - Metrics
                 // OpenTelemetry openTelemetry = initOpenTelemetry();
-                // Zero code instrumentation supplies the SDK and exporter through the Java agent.
+                // Zero code instrumentation supplies the SDK and exporter through the Java
+                // agent.
                 OpenTelemetry openTelemetry = GlobalOpenTelemetry.get();
                 Meter meter = openTelemetry.getMeter(INSTRUMENTATION_NAME);
                 this.requestCounter = meter.counterBuilder("app.db.db_requests")
@@ -182,6 +187,13 @@ public class MyServlet extends HttpServlet {
                 // The Java agent's servlet span is already the current parent.
                 Context parentContext = Context.current();
 
+                // Baggage propagation - Add baggage to the current context
+                Baggage baggage = Baggage.builder()
+                                .put("user.id", "12345")
+                                .put("user.name", "john_doe")
+                                .put("session.id", "abcde")
+                                .build();
+
                 // Code based instrumentation - Traces
                 // Span to capture sleep
                 Span sleepSpan = tracer.spanBuilder("SleepForTwoSeconds")
@@ -278,7 +290,11 @@ public class MyServlet extends HttpServlet {
 
                 // Make a request to the Python microservice
                 // Code based instrumentation - Traces
-                String averageAge = getAverageAge(dataList, parentContext);
+                // Baggage propagation - Pass the context with baggage to the getAverageAge
+                // method
+                // Baggage propagation - Pass the context with baggage to the getAverageAge
+                // method
+                String averageAge = getAverageAge(dataList, parentContext, baggage);
                 out.println("<h2>Average Age: " + averageAge + "</h2>");
                 out.println("</body></html>");
                 // Logs
@@ -286,7 +302,10 @@ public class MyServlet extends HttpServlet {
 
         }
 
-        private String getAverageAge(List<JSONObject> dataList, Context parentContext) throws IOException {
+        // Baggage propagation - Pass the context with baggage to the getAverageAge
+        // method
+        private String getAverageAge(List<JSONObject> dataList, Context parentContext, Baggage baggage)
+                        throws IOException {
 
                 Span computeSpan = tracer.spanBuilder("ComputeRequest")
                                 .setSpanKind(SpanKind.CLIENT)
@@ -318,6 +337,13 @@ public class MyServlet extends HttpServlet {
                         // W3CTraceContextPropagator propagator =
                         // W3CTraceContextPropagator.getInstance();
                         // propagator.inject(context, httpPost, HttpPost::setHeader);
+
+                        // Baggage propagation - Inject baggage into the HTTP request headers using
+                        // W3CBaggagePropagator
+                        // W3CBaggagePropagator.getInstance().inject(contextWithBaggage, httpPost,
+                        // HttpPost::setHeader);
+                        Context contextWithBaggage = Context.current().with(baggage);
+                        W3CBaggagePropagator.getInstance().inject(contextWithBaggage, httpPost, HttpPost::setHeader);
 
                         String responseString = httpClient.execute(httpPost,
                                         response -> EntityUtils.toString(response.getEntity()));

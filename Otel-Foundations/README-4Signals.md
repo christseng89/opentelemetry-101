@@ -869,3 +869,333 @@ bash build.sh
 docker compose up --build -d
 ```
 ---
+
+# Baggage
+
+## 1. References
+
+- W3C Baggage Specification: https://www.w3.org/TR/baggage/
+- OpenTelemetry Baggage: https://opentelemetry.io/docs/concepts/signals/baggage/
+
+## 2. Data Structure
+
+- **Key-Value Store**：用於儲存及傳遞 Contextual Information（上下文資訊）。
+- **Context Propagation**：可跨 Services 和 Processes 傳遞 Baggage。
+- **Common Examples**：
+  - Entity ID
+  - Entity Country
+  - Environment — prod / sit / uat / dev
+  - Channel — web / mobile
+  - Process Function — LC_ISSUANCE / PAYMENT
+
+### 2.1 W3C HTTP Headers
+
+| Header | Purpose |
+|---|---|
+| `traceparent` | 傳遞 Trace ID、Parent ID、Trace Flags |
+| `tracestate` | 選用的 Trace Context Metadata |
+| `baggage` | 傳遞 Application-defined Contextual Information |
+
+**Important:**
+
+- `baggage` 是獨立於 W3C Trace Context 的標準 HTTP Header。
+- Baggage 使用逗號分隔多組 Key-Value Pairs。
+- 跨服務傳遞需要啟用 Baggage Propagator。
+- Baggage 不會自動成為 Span Attributes、Metrics Attributes 或 Log Fields。
+
+**Example:**
+
+```http
+baggage: entity.id=CS01,entity.country=TW,channel=web,environment=sit
+```
+
+## 3. Baggage Architecture
+
+```mermaid
+flowchart TD
+    subgraph A["Service A — Web / API Service"]
+        direction TB
+
+        A1["HTTP Server<br/>Library"]
+        A2["Capture Business Context<br/>Custom Code"]
+        A3["Set Baggage<br/>entity.id=CS01"]
+        A4["HTTP Client<br/>Library"]
+
+        A1 --> A2 --> A3 --> A4
+    end
+
+    subgraph B["Service B — Business Service"]
+        direction TB
+
+        B1["HTTP Server<br/>Library"]
+        B2["Extract Baggage"]
+        B3["Business Processing<br/>Library / Custom Code"]
+        B4["HTTP Client<br/>Library"]
+
+        B1 --> B2 --> B3 --> B4
+    end
+
+    subgraph C["Service C — Java JVM"]
+        direction TB
+
+        C1["HTTP Server<br/>Library"]
+        C2["Extract Baggage"]
+        C3["Custom Code<br/>Read Business Context"]
+        C4["Database Connection<br/>Library"]
+
+        C1 --> C2 --> C3 --> C4
+    end
+
+    DB[("Database")]
+
+    A4 -->|"HTTP Request<br/>Inject baggage Header"| B1
+    B4 -->|"HTTP Request<br/>Inject baggage Header"| C1
+    C4 -->|"Database Query"| DB
+
+    classDef library fill:#A21CAF,stroke:#E879F9,color:#fff
+    classDef custom fill:#1D4ED8,stroke:#93C5FD,color:#fff
+    classDef baggage fill:#16A34A,stroke:#86EFAC,color:#fff
+    classDef database fill:#2563EB,stroke:#93C5FD,color:#fff
+
+    class A1,A4,B1,B3,B4,C1,C4 library
+    class A2,C3 custom
+    class A3,B2,C2 baggage
+    class DB database
+
+    style A fill:#E0F2FE,stroke:#0284C7,stroke-width:2px,color:#075985
+    style B fill:#F0FDF4,stroke:#16A34A,stroke-width:2px,color:#166534
+    style C fill:#FAF5FF,stroke:#9333EA,stroke-width:2px,color:#6B21A8
+```
+
+## 4. Baggage Propagation Flow
+
+| Step | Component | Action |
+|---|---|---|
+| 1 | Service A | Capture and validate Business Context |
+| 2 | Service A | Create and set Baggage in the active Context |
+| 3 | Service A → B | Inject W3C `baggage` HTTP Header |
+| 4 | Service B | Extract Baggage into its local Context |
+| 5 | Service B → C | Propagate Baggage through the outgoing HTTP Request |
+| 6 | Service C | Extract and read Baggage |
+| 7 | Service C | Execute Business Logic and Database Operations |
+
+**Important:** Baggage is propagated only when supported instrumentation or application code performs the required Context Injection and Extraction.
+
+## 5. OpenTelemetry Baggage Configuration
+
+Enable W3C Trace Context and Baggage Propagation:
+
+```yaml
+env:
+  - name: OTEL_PROPAGATORS
+    value: "tracecontext,baggage"
+```
+
+This configuration enables the propagators in an OpenTelemetry SDK or Agent that supports environment-based configuration.
+
+However, it does not automatically create Business Context or guarantee propagation through every protocol and library.
+
+## 6. Baggage vs Trace Context
+
+| Feature | Trace Context | Baggage |
+|---|---|---|
+| Primary Purpose | Distributed Tracing | Contextual Information |
+| Main HTTP Header | `traceparent` | `baggage` |
+| Data | Trace ID, Parent ID, Trace Flags | Application-defined Key-Value Pairs |
+| Cross-Service Propagation | Yes | Yes |
+| Automatically Added to Spans | Trace identity and parent relationships | No |
+| Typical Example | Trace ID | Entity ID, Country, Channel |
+
+## 7. Security Considerations
+
+- Do not place passwords, authentication tokens, full account numbers, or sensitive personal information in Baggage.
+- Use an approved allowlist for Baggage keys and values.
+- Validate Baggage received from external clients; do not trust incoming values automatically.
+- Restrict or remove Baggage before requests leave trusted service boundaries.
+- Avoid using high-cardinality identifiers as Metric Labels.
+- Use non-sensitive business identifiers only when approved by security and data governance policies.
+
+## 8. Conclusion
+
+**Baggage = Application-defined Contextual Information propagated between Services and Processes.**
+
+- **Set**：Application creates and stores Baggage in Context.
+- **Inject**：Propagator writes Baggage into outgoing HTTP Headers.
+- **Extract**：Receiving Service reconstructs Baggage from incoming Headers.
+- **Get**：Application reads Baggage from its local Context.
+- **Enrich**：Application may explicitly add approved Baggage values to Spans, Metrics, or Logs.
+
+**Key Point:** OpenTelemetry Baggage enables cross-service Context Propagation, but does not automatically create Telemetry Signals or record Baggage values in Observability Backends.
+
+---
+
+# OpenTelemetry Baggage — Learning Notes
+
+## 1. What Is Baggage?
+
+**Baggage** 用於在不同 Services / Processes 之間傳遞共用的業務上下文資訊（Contextual Information）。
+
+- 使用 **Key-Value Pairs** 儲存資料。
+- 透過 **Context Propagation** 跨服務傳遞。
+- 可以讓 Traces、Logs、Metrics 使用相同的業務上下文。
+- **Baggage 本身不是 Telemetry Signal。**
+- **Baggage 不會自動寫入 Spans、Logs 或 Metrics。**
+
+### Example — W3C Baggage Header
+
+```http
+baggage: entity.country=TW,channel=web,process.function=LC_ISSUANCE
+```
+
+此 Header 可以隨 HTTP Request 在 Java、Node.js、Python 等 Microservices 之間傳遞。
+
+## 2. Baggage vs. Telemetry Attributes
+
+| Telemetry Signal | Baggage 的使用方式 | Example |
+|---|---|---|
+| **Traces** | 寫入 Span Attributes | `entity.country=TW` |
+| **Logs** | 寫入 Log Attributes / Fields | `channel=web` |
+| **Metrics** | 寫入 Metric Attributes | `process.function=LC_ISSUANCE` |
+
+**Important:** Application Code 或經配置的 Instrumentation 必須明確讀取 Baggage，並將所需資訊加入 Telemetry。
+
+## 3. Baggage to Telemetry Architecture
+
+```mermaid
+flowchart TB
+    B["OpenTelemetry Baggage<br/>entity.country=TW<br/>channel=web<br/>process.function=LC_ISSUANCE"]
+
+    A["Application / Instrumentation<br/>Read & Enrich"]
+
+    T["Traces<br/>Span Attributes"]
+    L["Logs<br/>Log Attributes / Fields"]
+    M["Metrics<br/>Metric Attributes"]
+
+    COL["OpenTelemetry Collector"]
+    TEMPO["Tempo / Jaeger"]
+    LOKI["Loki"]
+    PROM["Prometheus"]
+
+    B --> A
+    A --> T
+    A --> L
+    A --> M
+
+    T --> COL
+    L --> COL
+    M --> COL
+
+    COL --> TEMPO
+    COL --> LOKI
+    COL --> PROM
+
+    classDef baggage fill:#16A34A,stroke:#86EFAC,color:#fff
+    classDef process fill:#7C3AED,stroke:#C4B5FD,color:#fff
+    classDef trace fill:#2563EB,stroke:#93C5FD,color:#fff
+    classDef logs fill:#EA580C,stroke:#FDBA74,color:#fff
+    classDef metrics fill:#0891B2,stroke:#67E8F9,color:#fff
+
+    class B baggage
+    class A process
+    class T,TEMPO trace
+    class L,LOKI logs
+    class M,PROM metrics
+```
+
+此圖說明 Baggage 如何被 Application / Instrumentation 用於 Telemetry Enrichment。
+
+Collector 只接收已產生的 Telemetry Records；Baggage 不會單獨作為一種 Signal 被匯出。
+
+## 4. Real-World Example — LC Issuance
+
+假設 LC Issuance 經過三個 Microservices：
+
+```text
+API Gateway
+    ↓
+LC Issuance Service
+    ↓
+Document Validation Service
+    ↓
+Settlement Service
+```
+
+API Gateway 建立以下 Baggage：
+
+```http
+baggage: entity.country=TW,channel=web,process.function=LC_ISSUANCE
+```
+
+下游 Services 可讀取相同的業務上下文，並選擇性地加入不同 Telemetry Signals。
+
+| Signal | Recorded Data | Purpose |
+|---|---|---|
+| Trace | `entity.country=TW` | 分析不同國家的交易處理流程 |
+| Log | `channel=web` | 分析不同渠道的應用日誌 |
+| Metric | `process.function=LC_ISSUANCE` | 監控 LC Issuance 的交易量與效能 |
+
+**Important:** Baggage Propagation 與 Telemetry Enrichment 是兩個不同的操作。
+
+## 5. Attributes vs. Fields
+
+| Type | Description |
+|---|---|
+| **Span Attributes** | 描述 Span 的 Key-Value 屬性 |
+| **Log Attributes / Fields** | 記錄在 Log Record 中的上下文資訊 |
+| **Metric Attributes** | 用於 Metric 分類、查詢及統計的 Key-Value 屬性 |
+
+### Cardinality Considerations
+
+Metric Attributes 必須控制 **Cardinality（基數）**。
+
+- **Suitable:** `entity.country=TW`
+- **Suitable:** `channel=web`
+- **Suitable:** `process.function=LC_ISSUANCE`
+- **Avoid:** 每筆交易都不同的 LC Number、Transaction ID、User ID
+
+高基數 Attributes 可能造成 Metrics Storage 與查詢成本大幅增加。
+
+## 6. Security Considerations
+
+- 不要在 Baggage 中放入密碼、Token、完整帳號或敏感個資。
+- 僅傳遞經核准的 Context Keys / Values。
+- 外部 HTTP Request 的 Baggage 必須經過驗證。
+- Baggage 傳送至外部服務前，應清除不應外送的資訊。
+
+## 7. Key Takeaways
+
+**Baggage = Propagate Context**
+
+**Attributes / Fields = Record Context in Telemetry**
+
+### Remember
+
+1. Baggage 透過 Context Propagation 跨服務傳遞。
+2. Baggage 本身不是 Metrics、Logs 或 Traces。
+3. Baggage 不會自動成為 Telemetry Attributes。
+4. Application / Instrumentation 可以將 Baggage 資訊加入 Span、Log 或 Metric。
+5. Metrics Attributes 必須控制 Cardinality。
+
+**Conclusion:** OpenTelemetry Baggage enables consistent business context across microservices, while Telemetry Enrichment makes selected context available for observability analysis.
+
+## References
+
+- W3C Baggage: https://www.w3.org/TR/baggage/
+- OpenTelemetry Baggage: https://opentelemetry.io/docs/concepts/signals/baggage/
+
+---
+# Hands-on Baggage - Hello Telemetry
+
+- Update `MyServlet.java`
+- Update `compute.py`
+
+```bash
+bash build.sh
+docker compose up --build -d
+```
+
+- <http://localhost:8085/MyWebApp/results>
+- <http://localhost:16686/search>
+- Docker Desktop `ht-otel-collector` => 'john_doe'
+
+---

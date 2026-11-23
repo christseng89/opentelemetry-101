@@ -545,3 +545,190 @@ flowchart TB
 - **SREs（Site Reliability Engineers）**：網站可靠性工程師
 
 ---
+
+# OTLP — OpenTelemetry 原生標準傳輸協定
+
+## 1. Overview
+
+**OTLP（OpenTelemetry Protocol）** 是 OpenTelemetry 原生定義的標準 Telemetry 傳輸協定。
+
+**OpenTelemetry 不只支援 OTLP。** OpenTelemetry Collector 可以透過不同的 Receivers 和 Exporters，接收、處理及輸出其他協定與資料格式。
+
+> OpenTelemetry can receive and export data in other formats through Collector receivers and exporters.
+
+**Key Point:** OTLP 是 OpenTelemetry 的標準傳輸協定，但不是 OpenTelemetry Collector 唯一支援的協定。
+
+## 2. OpenTelemetry Collector Components
+
+| Component | Responsibility | Examples |
+|---|---|---|
+| **Receiver** | 接收不同協定的 Telemetry Data | OTLP、Jaeger、Zipkin、Prometheus Receiver |
+| **Processor** | 處理、過濾、轉換及批次處理 Telemetry Data | Batch、Filter、Transform |
+| **Exporter** | 將 Telemetry Data 輸出至不同 Backends | OTLP、Prometheus Exporter、Kafka、Vendor Exporters |
+
+### Important Distinctions
+
+- **Receiver**：接收資料，部分 Receiver 也可以主動收集資料，例如 Prometheus Receiver 透過 Scrape 取得 Metrics。
+- **Processor**：對接收到的資料進行批次處理、過濾或轉換。
+- **Exporter**：將資料推送到 Backend，或依協定提供資料供 Backend 擷取。
+
+**Note:** Receiver、Processor 和 Exporter 的實際支援能力取決於 Collector Distribution 與已安裝的 Components。
+
+## 3. Real-World Architecture
+
+```mermaid id="hko24p"
+flowchart LR
+    A["Application<br/>OTLP"]
+    B["Application Metrics Endpoint<br/>/metrics"]
+    C["Zipkin Instrumented Application<br/>Zipkin Protocol"]
+
+    subgraph COL["OpenTelemetry Collector"]
+        direction TB
+
+        R["Receivers<br/>OTLP / Prometheus / Zipkin"]
+        P["Processors<br/>Batch / Filter / Transform"]
+        E["Exporters<br/>OTLP / Prometheus / Kafka"]
+
+        R --> P --> E
+    end
+
+    J["Jaeger / Tempo<br/>Tracing Backend"]
+    M["Prometheus<br/>Metrics Backend"]
+    K["Kafka / Vendor Backend"]
+
+    A -->|"OTLP Push"| R
+    B -.->|"Prometheus Receiver Scrapes"| R
+    C -->|"Zipkin Push"| R
+
+    E -->|"OTLP"| J
+    E -.->|"Prometheus Scrapes Exporter Endpoint"| M
+    E -->|"Kafka / Vendor Protocol"| K
+
+    classDef app fill:#2563EB,stroke:#93C5FD,color:#fff
+    classDef receiver fill:#7C3AED,stroke:#C4B5FD,color:#fff
+    classDef processor fill:#EA580C,stroke:#FDBA74,color:#fff
+    classDef exporter fill:#059669,stroke:#6EE7B7,color:#fff
+    classDef backend fill:#176B8A,stroke:#38BDF8,color:#fff
+
+    class A,B,C app
+    class R receiver
+    class P processor
+    class E exporter
+    class J,M,K backend
+
+    style COL fill:#E0F2FE,stroke:#0284C7,stroke-width:2px,color:#075985
+```
+
+### Architecture Explanation
+
+1. **OTLP Receiver**：接收 Application 透過 OTLP/gRPC 或 OTLP/HTTP 傳送的 Telemetry。
+2. **Prometheus Receiver**：主動 Scrape Application 暴露的 Metrics Endpoint。
+3. **Zipkin Receiver**：接收使用 Zipkin Protocol 傳送的 Trace Data。
+4. **Processors**：進行 Batch、Filter、Transform 等操作。
+5. **Exporters**：使用適當的 Protocol 將 Telemetry 傳送至 Backend。
+
+**Important:** Prometheus Exporter 通常是暴露 Metrics Endpoint，讓 Prometheus Server 主動 Scrape，而不是直接 Push Metrics 到 Prometheus。
+
+## 4. Real-World Example — MyServlet.java
+
+目前你的 Java Application 使用：
+
+**Zero-code + Code-based Instrumentation + Agent-managed OpenTelemetry SDK**
+
+### 4.1 Current Telemetry Flow
+
+```text
+MyServlet.java
+    ↓
+OpenTelemetry API
+    ↓
+Java Agent-managed OTel SDK
+    ↓
+OTLP Exporter
+    ↓
+OTLP/gRPC :4317
+    ↓
+OpenTelemetry Collector
+    ├── Traces → Jaeger + Debug Exporter
+    ├── Metrics → Debug Exporter
+    └── Logs → Debug Exporter
+```
+
+### 4.2 Current Docker Compose Configuration
+
+```yaml id="8cdfvx"
+OTEL_SERVICE_NAME: "ht-tomcat"
+
+OTEL_EXPORTER_OTLP_ENDPOINT: "http://ht-otel-collector:4317"
+OTEL_EXPORTER_OTLP_PROTOCOL: "grpc"
+
+OTEL_TRACES_EXPORTER: "otlp"
+OTEL_METRICS_EXPORTER: "otlp"
+OTEL_LOGS_EXPORTER: "otlp"
+
+OTEL_PROPAGATORS: "tracecontext,baggage"
+```
+
+目前 Collector 使用 OTLP Receiver 接收三種 Telemetry Signals：
+
+| Signal | Receiver | Exporter / Destination |
+|---|---|---|
+| **Traces** | OTLP | OTLP → Jaeger + Debug |
+| **Metrics** | OTLP | Debug |
+| **Logs** | OTLP | Debug |
+
+**Note:** Metrics 和 Logs 目前尚未配置長期儲存的 Observability Backend。
+
+## 5. Backend Flexibility
+
+OpenTelemetry Collector 可以將 Application 與 Observability Backend 解耦。
+
+例如：
+
+**Current Architecture**
+
+`MyServlet.java → OTel Collector → Jaeger`
+
+**Alternative Architecture**
+
+`MyServlet.java → OTel Collector → Grafana Tempo`
+
+**Metrics Integration**
+
+`MyServlet.java → OTel Collector → Prometheus-compatible Backend`
+
+因此，未來如果從 Jaeger 切換為 Tempo，或新增 Prometheus Metrics Backend，通常只需調整 Collector Exporters / Pipelines 和必要的 Backend Configuration。
+
+**不需要因此修改 MyServlet.java 的 OpenTelemetry Instrumentation Code。**
+
+## 6. Key Takeaways
+
+| Concept | Key Point |
+|---|---|
+| **OTLP** | OpenTelemetry 原生定義的標準傳輸協定 |
+| **Collector Receiver** | 接收或主動收集不同 Protocol 的 Telemetry |
+| **Collector Processor** | Batch、Filter、Transform |
+| **Collector Exporter** | 使用 OTLP 或其他 Backend Protocol 輸出資料 |
+| **Interoperability** | 不同協定與系統之間的互通性 |
+| **Backend Flexibility** | 可以替換或整合不同 Observability Backends |
+| **Vendor Neutrality** | 降低 Application 對特定 Vendor 的依賴 |
+
+## 7. Conclusion
+
+**OTLP 是 OpenTelemetry 原生定義的標準 Telemetry 傳輸協定，但不是 OpenTelemetry Collector 唯一支援的協定。**
+
+OpenTelemetry Collector 可以透過不同的 **Receivers、Processors 和 Exporters**，整合 OTLP、Prometheus、Zipkin、Kafka，以及其他 Observability Systems。
+
+**核心架構：**
+
+`Application → OTel API → SDK → OTLP Exporter → Collector → Observability Backend`
+
+**Key Point:** OpenTelemetry 提供標準化的 Telemetry Instrumentation 和 Transport，而 Collector 提供多協定整合及 Backend Flexibility，協助建立 Vendor-neutral Observability Architecture。
+
+## References
+
+- [OpenTelemetry Protocol（OTLP）](https://opentelemetry.io/docs/specs/otlp/)
+- [OpenTelemetry Collector](https://opentelemetry.io/docs/collector/)
+- [Collector Configuration](https://opentelemetry.io/docs/collector/configuration/)
+
+---

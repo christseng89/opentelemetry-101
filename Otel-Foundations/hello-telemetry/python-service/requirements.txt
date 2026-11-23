@@ -5,9 +5,9 @@ werkzeug==3.1.6
 opentelemetry-distro
 opentelemetry-exporter-otlp
 
-# Code based instrumentation
-opentelemetry-api
-opentelemetry-sdk
+# Code based instrumentation, not required for zero-code instrumentation
+# opentelemetry-api
+# opentelemetry-sdk
 
 # Zero-code instrumentation
 # opentelemetry-semantic-conventions

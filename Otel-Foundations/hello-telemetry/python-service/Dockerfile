@@ -26,13 +26,26 @@ EXPOSE 5000
 
 # OTEL environment variables
 # Zero code instrumentation
+# OpenTelemetry SDK Autoconfigure
 ENV OTEL_SERVICE_NAME=ht-python-service
+
+# OTLP/gRPC
 ENV OTEL_EXPORTER_OTLP_ENDPOINT=http://ht-otel-collector:4317
 ENV OTEL_EXPORTER_OTLP_PROTOCOL=grpc
+
+# Telemetry Signals
 ENV OTEL_TRACES_EXPORTER=otlp
 ENV OTEL_METRICS_EXPORTER=otlp
 ENV OTEL_LOGS_EXPORTER=otlp
+
+# Context Propagation
+ENV OTEL_PROPAGATORS=tracecontext,baggage
+
+# Python Logging Correlation
 ENV OTEL_PYTHON_LOG_CORRELATION=true
+
+# Stable HTTP Semantic Conventions
+ENV OTEL_SEMCONV_STABILITY_OPT_IN=http
 
 # Run the application with OpenTelemetry zero-code instrumentation
 # Zero code instrumentation

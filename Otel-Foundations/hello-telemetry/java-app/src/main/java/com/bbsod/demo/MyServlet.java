@@ -49,6 +49,9 @@ import io.opentelemetry.context.Context;
 import io.opentelemetry.context.Scope;
 // import io.opentelemetry.context.propagation.TextMapPropagator;
 
+// Logs Enhancement
+import io.opentelemetry.instrumentation.logback.appender.v1_0.OpenTelemetryAppender;
+
 // Zero code instrumentation
 // import io.opentelemetry.exporter.otlp.metrics.OtlpGrpcMetricExporter;
 // import io.opentelemetry.exporter.otlp.trace.OtlpGrpcSpanExporter;
@@ -59,8 +62,9 @@ import java.util.logging.Logger;
 // import io.opentelemetry.sdk.logs.SdkLoggerProvider;
 // import io.opentelemetry.sdk.logs.export.BatchLogRecordProcessor;
 // import io.opentelemetry.exporter.otlp.logs.OtlpGrpcLogRecordExporter;
-import io.opentelemetry.instrumentation.logback.appender.v1_0.OpenTelemetryAppender;
-import org.slf4j.bridge.SLF4JBridgeHandler;
+// Logs Enhancement
+// import io.opentelemetry.instrumentation.logback.appender.v1_0.OpenTelemetryAppender;
+// import org.slf4j.bridge.SLF4JBridgeHandler;
 
 // Baggage
 import io.opentelemetry.api.baggage.Baggage;
@@ -90,13 +94,14 @@ public class MyServlet extends HttpServlet {
                 // Code based instrumentation - Traces
                 this.tracer = openTelemetry.getTracer(INSTRUMENTATION_NAME);
 
-                // Logs
-                // Install SLF4JBridgeHandler to route JUL logs to SLF4J
-                SLF4JBridgeHandler.removeHandlersForRootLogger();
-                SLF4JBridgeHandler.install();
+                // Logs Enhancement
+                // // Logs
+                // // Install SLF4JBridgeHandler to route JUL logs to SLF4J
+                // SLF4JBridgeHandler.removeHandlersForRootLogger();
+                // SLF4JBridgeHandler.install();
 
-                // Install OpenTelemetry in logback appender
-                OpenTelemetryAppender.install(openTelemetry);
+                // // Install OpenTelemetry in logback appender
+                // OpenTelemetryAppender.install(openTelemetry);
 
         }
 
@@ -230,41 +235,41 @@ public class MyServlet extends HttpServlet {
                         // Load MySQL JDBC Driver
                         Class.forName("com.mysql.cj.jdbc.Driver");
 
-                        // Establish connection
-                        Connection connection = DriverManager.getConnection(jdbcUrl, jdbcUser,
-                                        jdbcPassword);
-
-                        // Create a statement
-                        Statement statement = connection.createStatement();
-
-                        // Execute a query
+                        // Database connection enhancement
                         String query = "SELECT * FROM mytable";
-                        ResultSet resultSet = statement.executeQuery(query);
+                        // Establish connection
+                        try (Connection connection = DriverManager.getConnection(jdbcUrl, jdbcUser,
+                                        jdbcPassword);
+                                        // Create a statement
+                                        Statement statement = connection.createStatement();
+                                        // Execute a query
+                                        ResultSet resultSet = statement.executeQuery(query)) {
 
-                        // Code based instrumentation - Metrics
-                        requestCounter.add(1);
+                                // Code based instrumentation - Metrics
+                                requestCounter.add(1);
 
-                        // Build web page
-                        out.println("<html><body>");
-                        out.println("<h1>Database Results</h1>");
-                        out.println("<table border='1'>");
-                        out.println("<tr><th>ID</th><th>Name</th><th>Age</th></tr>");
+                                // Build web page
+                                out.println("<html><body>");
+                                out.println("<h1>Database Results</h1>");
+                                out.println("<table border='1'>");
+                                out.println("<tr><th>ID</th><th>Name</th><th>Age</th></tr>");
 
-                        while (resultSet.next()) {
-                                int id = resultSet.getInt("id");
-                                String name = resultSet.getString("name");
-                                int age = resultSet.getInt("age");
-                                out.println("<tr><td>" + id + "</td><td>" + name + "</td><td>" + age
-                                                + "</td></tr>");
+                                while (resultSet.next()) {
+                                        int id = resultSet.getInt("id");
+                                        String name = resultSet.getString("name");
+                                        int age = resultSet.getInt("age");
+                                        out.println("<tr><td>" + id + "</td><td>" + name + "</td><td>" + age
+                                                        + "</td></tr>");
 
-                                JSONObject dataObject = new JSONObject();
-                                dataObject.put("id", id);
-                                dataObject.put("name", name);
-                                dataObject.put("age", age);
-                                dataList.add(dataObject);
+                                        JSONObject dataObject = new JSONObject();
+                                        dataObject.put("id", id);
+                                        dataObject.put("name", name);
+                                        dataObject.put("age", age);
+                                        dataList.add(dataObject);
 
+                                }
+                                out.println("</table>");
                         }
-                        out.println("</table>");
                 } catch (ClassNotFoundException e) {
                         // Logs
                         julLogger.severe("MySQL JDBC Driver not found.");
@@ -340,10 +345,10 @@ public class MyServlet extends HttpServlet {
 
                         // Baggage propagation - Inject baggage into the HTTP request headers using
                         // W3CBaggagePropagator
-                        // W3CBaggagePropagator.getInstance().inject(contextWithBaggage, httpPost,
+                        // W3CBaggagePropagator.getInstance().inject(baggageContext, httpPost,
                         // HttpPost::setHeader);
-                        Context contextWithBaggage = Context.current().with(baggage);
-                        W3CBaggagePropagator.getInstance().inject(contextWithBaggage, httpPost, HttpPost::setHeader);
+                        Context baggageContext = Context.current().with(baggage);
+                        W3CBaggagePropagator.getInstance().inject(baggageContext, httpPost, HttpPost::setHeader);
 
                         String responseString = httpClient.execute(httpPost,
                                         response -> EntityUtils.toString(response.getEntity()));

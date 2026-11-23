@@ -1526,3 +1526,97 @@ Logging Library Log Record
 | **OpenTelemetry Instrumentation Developer** | OTel 社群或第三方整合工具開發者 | 開發 Appender / Bridge，將 Logging Library 接入 OTel Logs API |
 
 ---
+# Hello Telemetry 完整架構圖
+
+```mermaid
+
+flowchart TB
+    subgraph JAVA["Java Service — ht-tomcat"]
+        direction TB
+        JA["OTel Java Agent"]
+        JS["MyServlet.java"]
+        JC["Manual Spans / Counter"]
+        JB["Set Baggage"]
+        JHTTP["Apache HttpClient 5"]
+
+        JA -.-> JS
+        JS --> JC
+        JS --> JB
+        JC --> JHTTP
+        JB --> JHTTP
+    end
+
+    subgraph PY["Python Service — ht-python-service"]
+        direction TB
+        PA["Python Auto-Instrumentation"]
+        FLASK["Flask HTTP Server Span"]
+        BG["Read Baggage + Allowlist"]
+        SPAN["Custom ComputeSpan"]
+        MET["Counter + Metric Attributes"]
+        LOG["Python Logging + Context Attributes"]
+
+        PA -.-> FLASK
+        FLASK --> BG
+        BG --> SPAN
+        BG --> MET
+        SPAN --> LOG
+    end
+
+    SDK["Agent-managed OTel SDKs"]
+    COL["OpenTelemetry Collector"]
+    BACK["Prometheus / Loki / Jaeger / Tempo"]
+
+    JHTTP -->|"traceparent + baggage"| FLASK
+    JA -.-> SDK
+    PA -.-> SDK
+    SPAN -.-> SDK
+    MET -.-> SDK
+    LOG -.-> SDK
+    SDK -->|"OTLP"| COL
+    COL --> BACK
+
+    classDef java fill:#2563EB,stroke:#93C5FD,color:#fff
+    classDef python fill:#9333EA,stroke:#D8B4FE,color:#fff
+    classDef baggage fill:#16A34A,stroke:#86EFAC,color:#fff
+    classDef telemetry fill:#EA580C,stroke:#FDBA74,color:#fff
+    classDef backend fill:#0D9488,stroke:#5EEAD4,color:#fff
+
+    class JA,JS,JC,JHTTP java
+    class PA,FLASK,SPAN python
+    class JB,BG baggage
+    class MET,LOG telemetry
+    class SDK,COL,BACK backend
+
+```
+---
+
+# SDK Architecture — Zero-code + Code-based
+
+## Zero-code + Code-based Instrumentation
+
+**docker-compose.yml**
+
+```yaml
+environment:
+  - JAVA_TOOL_OPTIONS=-javaagent:/opt/opentelemetry-javaagent.jar
+  - OTEL_EXPORTER_OTLP_ENDPOINT=http://ht-otel-collector:4318
+  - OTEL_SERVICE_NAME=tomcat-service
+```
+
+**MyServlet.java**
+
+```java
+// Reuse the OpenTelemetry instance initialized by the Java Agent
+OpenTelemetry openTelemetry = GlobalOpenTelemetry.get();
+
+// Code-based Metrics
+this.meter = openTelemetry.getMeter(INSTRUMENTATION_NAME);
+this.requestCounter = meter.counterBuilder("app.db.db_requests")
+        .setDescription("Count DB requests")
+        .build();
+
+// Code-based Traces
+this.tracer = openTelemetry.getTracer(INSTRUMENTATION_NAME);
+```
+
+---

@@ -8,7 +8,7 @@ import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
 import java.io.PrintWriter;
 import java.sql.Connection;
-import java.sql.DriverManager;
+// import java.sql.DriverManager;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
@@ -17,6 +17,9 @@ import java.util.List;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
+// JDBC connection pool
+import com.zaxxer.hikari.HikariConfig;
+import com.zaxxer.hikari.HikariDataSource;
 
 import org.apache.hc.client5.http.classic.methods.HttpPost;
 import org.apache.hc.client5.http.impl.classic.CloseableHttpClient;
@@ -40,6 +43,7 @@ import io.opentelemetry.api.OpenTelemetry;
 // import io.opentelemetry.api.common.Attributes;
 import io.opentelemetry.api.metrics.LongCounter;
 import io.opentelemetry.api.metrics.Meter;
+import io.opentelemetry.api.metrics.ObservableLongGauge;
 import io.opentelemetry.api.trace.Span;
 import io.opentelemetry.api.trace.SpanKind;
 import io.opentelemetry.api.trace.Tracer;
@@ -75,10 +79,18 @@ public class MyServlet extends HttpServlet {
         // Code based instrumentation - Metrics
         private static final String INSTRUMENTATION_NAME = MyServlet.class.getName();
         private final LongCounter requestCounter;
+        private final LongCounter dbAccessCounter;
+        private final LongCounter poolCreatedCounter;
+        private final ObservableLongGauge poolAvailableGauge;
+        private final ObservableLongGauge poolTotalGauge;
+        private final ObservableLongGauge poolActiveGauge;
+        private final ObservableLongGauge poolMaxGauge;
         // Code based instrumentation - Traces
         private final Tracer tracer;
         // Logs
         private static final java.util.logging.Logger julLogger = Logger.getLogger("jul-logger");
+        // JDBC connection pool
+        private HikariDataSource dataSource;
 
         // Constructor
         public MyServlet() {
@@ -91,6 +103,50 @@ public class MyServlet extends HttpServlet {
                 this.requestCounter = meter.counterBuilder("app.db.db_requests")
                                 .setDescription("Count DB requests")
                                 .build();
+
+                // JDBC connection pool metrics
+                this.dbAccessCounter = meter.counterBuilder("app.db.pool.connection_requests")
+                                .setDescription("Count connections borrowed from the database pool")
+                                .build();
+                this.poolCreatedCounter = meter.counterBuilder("app.db.pool.created")
+                                .setDescription("Count database connection pool creations")
+                                .build();
+                this.poolAvailableGauge = meter.gaugeBuilder("app.db.pool.available")
+                                .ofLongs()
+                                .setDescription("Current number of idle connections available in the database pool")
+                                .buildWithCallback(measurement -> {
+                                        HikariDataSource pool = dataSource;
+                                        if (pool != null && !pool.isClosed() && pool.getHikariPoolMXBean() != null) {
+                                                measurement.record(pool.getHikariPoolMXBean().getIdleConnections());
+                                        }
+                                });
+                this.poolTotalGauge = meter.gaugeBuilder("app.db.pool.total")
+                                .ofLongs()
+                                .setDescription("Current total number of connections in the database pool")
+                                .buildWithCallback(measurement -> {
+                                        HikariDataSource pool = dataSource;
+                                        if (pool != null && !pool.isClosed() && pool.getHikariPoolMXBean() != null) {
+                                                measurement.record(pool.getHikariPoolMXBean().getTotalConnections());
+                                        }
+                                });
+                this.poolActiveGauge = meter.gaugeBuilder("app.db.pool.active")
+                                .ofLongs()
+                                .setDescription("Current number of active connections in the database pool")
+                                .buildWithCallback(measurement -> {
+                                        HikariDataSource pool = dataSource;
+                                        if (pool != null && !pool.isClosed() && pool.getHikariPoolMXBean() != null) {
+                                                measurement.record(pool.getHikariPoolMXBean().getActiveConnections());
+                                        }
+                                });
+                this.poolMaxGauge = meter.gaugeBuilder("app.db.pool.max")
+                                .ofLongs()
+                                .setDescription("Configured maximum number of connections in the database pool")
+                                .buildWithCallback(measurement -> {
+                                        HikariDataSource pool = dataSource;
+                                        if (pool != null && !pool.isClosed()) {
+                                                measurement.record(pool.getMaximumPoolSize());
+                                        }
+                                });
                 // Code based instrumentation - Traces
                 this.tracer = openTelemetry.getTracer(INSTRUMENTATION_NAME);
 
@@ -103,6 +159,34 @@ public class MyServlet extends HttpServlet {
                 // // Install OpenTelemetry in logback appender
                 // OpenTelemetryAppender.install(openTelemetry);
 
+        }
+
+        // JDBC connection pool
+        @Override
+        public void init() throws ServletException {
+                super.init();
+
+                HikariConfig poolConfig = new HikariConfig();
+                poolConfig.setJdbcUrl("jdbc:mysql://ht-mysql:3306/mydatabase");
+                poolConfig.setDriverClassName("com.mysql.cj.jdbc.Driver");
+                poolConfig.setUsername("myuser");
+                poolConfig.setPassword("mypassword");
+                poolConfig.setMaximumPoolSize(10);
+                poolConfig.setMinimumIdle(2);
+                poolConfig.setConnectionTimeout(30_000);
+
+                dataSource = new HikariDataSource(poolConfig);
+                poolCreatedCounter.add(1);
+                julLogger.info("Database connection pool initialized");
+        }
+
+        @Override
+        public void destroy() {
+                if (dataSource != null) {
+                        dataSource.close();
+                        julLogger.info("Database connection pool closed");
+                }
+                super.destroy();
         }
 
         // Zero code instrumentation
@@ -224,57 +308,48 @@ public class MyServlet extends HttpServlet {
                                 .startSpan();
                 // Code based instrumentation - Traces end
 
-                // JDBC connection parameters
-                String jdbcUrl = "jdbc:mysql://ht-mysql:3306/mydatabase";
-                String jdbcUser = "myuser";
-                String jdbcPassword = "mypassword";
-
                 try {
                         // Logs
-                        julLogger.info("DB Connection initiated");
-                        // Load MySQL JDBC Driver
-                        Class.forName("com.mysql.cj.jdbc.Driver");
+                        // JDBC connection pool
+                        julLogger.info("Requesting database connection from pool");
 
                         // Database connection enhancement
                         String query = "SELECT * FROM mytable";
-                        // Establish connection
-                        try (Connection connection = DriverManager.getConnection(jdbcUrl, jdbcUser,
-                                        jdbcPassword);
-                                        // Create a statement
-                                        Statement statement = connection.createStatement();
-                                        // Execute a query
-                                        ResultSet resultSet = statement.executeQuery(query)) {
-
+                        // Borrow a connection from the pool. Closing it returns it to the pool.
+                        // JDBC connection pool
+                        try (Connection connection = dataSource.getConnection()) {
                                 // Code based instrumentation - Metrics
-                                requestCounter.add(1);
+                                dbAccessCounter.add(1);
 
-                                // Build web page
-                                out.println("<html><body>");
-                                out.println("<h1>Database Results</h1>");
-                                out.println("<table border='1'>");
-                                out.println("<tr><th>ID</th><th>Name</th><th>Age</th></tr>");
+                                try (Statement statement = connection.createStatement();
+                                                // Execute a query
+                                                ResultSet resultSet = statement.executeQuery(query)) {
 
-                                while (resultSet.next()) {
-                                        int id = resultSet.getInt("id");
-                                        String name = resultSet.getString("name");
-                                        int age = resultSet.getInt("age");
-                                        out.println("<tr><td>" + id + "</td><td>" + name + "</td><td>" + age
-                                                        + "</td></tr>");
+                                        requestCounter.add(1);
 
-                                        JSONObject dataObject = new JSONObject();
-                                        dataObject.put("id", id);
-                                        dataObject.put("name", name);
-                                        dataObject.put("age", age);
-                                        dataList.add(dataObject);
+                                        // Build web page
+                                        out.println("<html><body>");
+                                        out.println("<h1>Database Results</h1>");
+                                        out.println("<table border='1'>");
+                                        out.println("<tr><th>ID</th><th>Name</th><th>Age</th></tr>");
 
+                                        while (resultSet.next()) {
+                                                int id = resultSet.getInt("id");
+                                                String name = resultSet.getString("name");
+                                                int age = resultSet.getInt("age");
+                                                out.println("<tr><td>" + id + "</td><td>" + name + "</td><td>" + age
+                                                                + "</td></tr>");
+
+                                                JSONObject dataObject = new JSONObject();
+                                                dataObject.put("id", id);
+                                                dataObject.put("name", name);
+                                                dataObject.put("age", age);
+                                                dataList.add(dataObject);
+
+                                        }
+                                        out.println("</table>");
                                 }
-                                out.println("</table>");
                         }
-                } catch (ClassNotFoundException e) {
-                        // Logs
-                        julLogger.severe("MySQL JDBC Driver not found.");
-                        // System.out.println("MySQL JDBC Driver not found.");
-                        e.printStackTrace();
                 } catch (SQLException e) {
                         // Logs
                         julLogger.severe("Database connection failed.");

@@ -149,10 +149,18 @@ docker compose down
 ## Architecture
 
 - Docker Compose 會將 init.sql 掛載到 MySQL 的初始化目錄，MySQL 首次建立資料庫時執行它，用來建立資料庫、資料表與初始資料。
+- `init.sql` 也會授予 `myuser` 讀取 `performance_schema` 及執行 replica status 查詢所需的權限，讓 OpenTelemetry Collector 的 MySQL receiver 可以收集指標。
 - Java/Tomcat 應用程式執行 JDBC 查詢時，OpenTelemetry Java Agent 會觀測這些資料庫操作。
 - Python service 負責計算平均年齡（average age），並透過 OpenTelemetry 產生 trace/span。
 
 > 注意：只有在 mysql_data volume 為空、第一次初始化時才會自動執行。
+
+如果 `mysql_data` 已經存在，請在 MySQL 容器中手動補上 receiver 權限，或在可捨棄學習資料時使用 `docker compose down -v` 後重新啟動：
+
+```bash
+docker exec -it ht-mysql mysql -uroot -prootpassword -e "GRANT SELECT ON performance_schema.* TO 'myuser'@'%'; GRANT REPLICATION CLIENT ON *.* TO 'myuser'@'%';"
+docker compose restart ht-otel-collector
+```
 
 ```text
 Service & Operation

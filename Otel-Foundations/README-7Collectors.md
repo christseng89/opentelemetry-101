@@ -1622,7 +1622,1315 @@ flowchart TB
 - `otel-collector-config.dev.yaml`
 - `otel-collector-config.prod.yaml`
 - `docker-compose.yml`
+- `.env`
+- `init.sql`
+
+```conf
+# Due to the OpenTelemetry Collector is installed in Windows Machine
+OTLP_GRPC_PORT=14317
+OTLP_HTTP_PORT=14318
+OTEL_ZPAGES_PORT=55680
+```
 
 ```bash
+docker compose down -v
 docker compose up --build -d
+docker compose exec ht-mysql mysql -uroot -prootpassword -e \
+"GRANT SELECT ON performance_schema.* TO 'myuser'@'%';
+ GRANT REPLICATION CLIENT ON *.* TO 'myuser'@'%';"
+
+docker compose exec ht-mysql mysql -uroot -prootpassword -e "SHOW GRANTS FOR 'myuser'@'%';" 
+
+docker compose exec ht-mysql mysql -h ht-mysql -umyuser -pmypassword -e "SELECT USER(), CURRENT_USER(); SELECT COUNT(*) FROM performance_schema.events_statements_summary_by_digest; SHOW REPLICA STATUS;"
+
+docker compose restart ht-otel-collector
+docker compose logs --since 1m ht-otel-collector
 ```
+
+- <http://localhost:8085/MyWebApp/>
+- <http://localhost:16686/search>
+
+```bash
+docker compose exec ht-mysql mysql -uroot -prootpassword -e \
+"SELECT User, Host FROM mysql.user WHERE User='myuser';"
+
+docker compose exec ht-mysql mysql -uroot -prootpassword -e "SHOW DATABASES;"
+docker compose exec ht-mysql mysql -uroot -prootpassword -e "SELECT * FROM mydatabase.mytable;"
+```
+
+---
+## **OpenTelemetry Collector — Agent Deployment Pattern**
+
+這兩張圖說明 **OpenTelemetry Collector Agent Pattern** 的三種部署方式，以及何時適合使用 Agent。
+
+**Agent Pattern 的核心概念：將 Collector 部署在 Application 附近，快速接收 Telemetry，並收集 Host / Node 層級的監控資料。**
+
+## **1. Three Agent Deployment Patterns**
+
+```mermaid
+
+flowchart TB
+    subgraph HOST["Pattern A — Host Agent"]
+        direction LR
+        APP1["Application"]
+        AG1["Collector Agent<br/>Host Process"]
+        APP1 -->|"OTLP"| AG1
+    end
+
+    subgraph NODE["Pattern B — Kubernetes Node Agent"]
+        direction LR
+        subgraph PODS["Application Pods"]
+            direction TB
+            P1["Application Pod 1"]
+            P2["Application Pod 2"]
+            P3["Application Pod 3"]
+        end
+        AG2["Collector Agent<br/>DaemonSet"]
+        P1 --> AG2
+        P2 --> AG2
+        P3 --> AG2
+    end
+
+    subgraph POD["Pattern C — Kubernetes Sidecar"]
+        direction LR
+        APP3["Application Container"]
+        AG3["Collector Agent<br/>Sidecar Container"]
+        APP3 -->|"OTLP"| AG3
+    end
+
+    HOST ~~~ NODE
+    NODE ~~~ POD
+
+    classDef app fill:#A21CAF,stroke:#E879F9,color:#fff
+    classDef agent fill:#16A34A,stroke:#86EFAC,color:#fff
+
+    class APP1,P1,P2,P3,APP3 app
+    class AG1,AG2,AG3 agent
+
+    style HOST fill:#E0F2FE,stroke:#0284C7,color:#075985
+    style NODE fill:#F0FDF4,stroke:#16A34A,color:#166534
+    style POD fill:#FAF5FF,stroke:#9333EA,color:#6B21A8
+
+```
+
+| Pattern           | Deployment           | Purpose                                      |
+| ----------------- | -------------------- | -------------------------------------------- |
+| **Host Agent**    | VM / Physical Server | 收集 Host Metrics、Application Telemetry        |
+| **Node Agent**    | Kubernetes DaemonSet | 每個 Node 一個 Collector，收集 Node / Pod Telemetry |
+| **Sidecar Agent** | Kubernetes Pod       | Application 和 Collector 在同一個 Pod 中運行         |
+
+**對多節點 Kubernetes，Node Agent（DaemonSet）通常是首選 Agent Pattern。**
+
+## **2. When to Use Agent Pattern**
+
+根據投影片，適合使用 Agent 的情境：
+
+- **Host-level Data Collection**：需要收集 CPU、Memory、Disk、Network 等 Host Metrics。
+- **Offload Telemetry Quickly**：Application 能快速將 Telemetry 傳送給附近的 Agent。
+- **Host-dependent Receivers**：某些 Receivers 必須在 Host / Node 上執行，例如讀取本機 Log Files。
+
+## **3. Advantages vs Disadvantages**
+
+| Pros                                      | Cons                                               |
+| ----------------------------------------- | -------------------------------------------------- |
+| **Low Latency**：就近接收 Telemetry            | **Management Complexity**：需要管理多個 Agents            |
+| **Host-specific Data**：可取得 Node / Host 資料 | **Resource Consumption**：每個 Agent 都消耗 CPU / Memory |
+| **Decoupling**：Application 不直接依賴 Backend  | **Heavy Processing**：不適合在每個 Agent 上執行大量複雜處理        |
+
+## **4. Recommended Kubernetes Architecture**
+
+對多個 Java、Node.js、Python Microservices 分散在不同 Kubernetes Nodes 的架構，可以採用：
+
+```mermaid
+
+flowchart TB
+    subgraph K8S["Kubernetes Cluster"]
+        direction TB
+
+        subgraph N1["Node 1"]
+            A1["Java Microservice"]
+            A2["Node.js Microservice"]
+            AG1["OTel Collector Agent<br/>DaemonSet"]
+            A1 -->|"OTLP"| AG1
+            A2 -->|"OTLP"| AG1
+        end
+
+        subgraph N2["Node 2"]
+            A3["Python Microservice"]
+            A4["Java Microservice"]
+            AG2["OTel Collector Agent<br/>DaemonSet"]
+            A3 -->|"OTLP"| AG2
+            A4 -->|"OTLP"| AG2
+        end
+
+        GW["OTel Collector Gateway<br/>Deployment"]
+        AG1 -->|"OTLP"| GW
+        AG2 -->|"OTLP"| GW
+    end
+
+    BACK["Observability Backends<br/>Prometheus / Loki / Tempo"]
+
+    GW --> BACK
+
+    classDef app fill:#2563EB,color:#fff
+    classDef agent fill:#7C3AED,color:#fff
+    classDef gateway fill:#059669,color:#fff
+    classDef backend fill:#EA580C,color:#fff
+
+    class A1,A2,A3,A4 app
+    class AG1,AG2 agent
+    class GW gateway
+    class BACK backend
+
+```
+
+### **Agent vs Gateway Responsibilities**
+
+| Collector Agent            | Collector Gateway                  |
+| -------------------------- | ---------------------------------- |
+| Host / Node Metrics        | Centralized Processing             |
+| Container Log Collection   | Filtering / Transformation         |
+| Application OTLP Receiving | Tail Sampling（需 Trace Affinity）    |
+| Lightweight Processing     | Backend Routing                    |
+| Fast Telemetry Offloading  | Authentication / Export Management |
+
+**注意：** Agent Pattern 不一定需要 Gateway；這張圖展示的是進階的 Agent + Gateway 組合。
+
+## **5. 與你的 MyServlet.java 的關係**
+
+你目前使用：
+
+`MyServlet.java → Java Agent-managed OTel SDK → Single OTel Collector → Jaeger`
+
+這是適合 Learning / PoC 的簡單部署。
+
+將來改成多節點 Kubernetes 時，可以調整為：
+
+`MyServlet.java → Node-local Collector Agent → Central Collector Gateway → Jaeger / Tempo`
+
+**重要區別：OpenTelemetry Java Agent 與 OpenTelemetry Collector Agent 不是同一個元件。**
+
+- **Java Agent**：在 JVM 中進行 Zero-code Instrumentation。
+- **Collector Agent**：在 Host / Kubernetes Node 上收集及轉送 Telemetry。
+
+**結論：Agent Pattern 適合需要 Host-level Telemetry、快速卸載資料，以及 Node-local Receivers 的環境。對多節點 Kubernetes，通常使用 DaemonSet 部署 Collector Agent，再視需求搭配中央 Gateway。**
+
+---
+## **OpenTelemetry Collector — Gateway Deployment Pattern**
+
+這兩張圖說明 **OpenTelemetry Collector Gateway Pattern** 的部署方式、適用情境，以及優缺點。
+
+**Gateway Pattern 的核心概念：Application 將 Telemetry 傳送至集中部署的 Collector Gateway，由 Gateway 統一處理、控制及匯出至 Observability Backend。**
+
+## **1. Gateway Deployment Architecture**
+
+```mermaid
+
+flowchart TB
+    subgraph K8S["Kubernetes Cluster"]
+        direction TB
+
+        subgraph NODE1["Kubernetes Node 1"]
+            direction TB
+            JAVA["Java Application Pod"]
+            NODEJS["Node.js Application Pod"]
+        end
+
+        subgraph NODE2["Kubernetes Node 2"]
+            direction TB
+            PY["Python Application Pod"]
+            OTHER["Other Application Pod"]
+        end
+
+        GW["OpenTelemetry Collector Gateway<br/>Kubernetes Deployment / StatefulSet"]
+    end
+
+    BACK["Observability Backend<br/>Jaeger / Tempo / Loki / Prometheus"]
+
+    JAVA -->|"OTLP"| GW
+    NODEJS -->|"OTLP"| GW
+    PY -->|"OTLP"| GW
+    OTHER -->|"OTLP"| GW
+
+    GW -->|"OTLP / Backend Protocol"| BACK
+
+    classDef app fill:#A21CAF,stroke:#E879F9,color:#fff
+    classDef gateway fill:#16A34A,stroke:#86EFAC,color:#fff
+    classDef backend fill:#176B8A,stroke:#38BDF8,color:#fff
+
+    class JAVA,NODEJS,PY,OTHER app
+    class GW gateway
+    class BACK backend
+
+    style K8S fill:#F0FDF4,stroke:#15803D,stroke-width:2px,color:#166534
+    style NODE1 fill:#EFF6FF,stroke:#2563EB,color:#1E40AF
+    style NODE2 fill:#EFF6FF,stroke:#2563EB,color:#1E40AF
+
+```
+
+這是依據投影片整理的 Gateway-only 邏輯架構。原圖也展示 VM／Host 上的 Application 將資料傳送到獨立 Gateway Host；不局限於 Kubernetes。
+
+## **2. When to Use Gateway Pattern**
+
+根據投影片，以下情況適合採用 Gateway：
+
+| Use Case                           | Purpose                                  |
+| ---------------------------------- | ---------------------------------------- |
+| **Centralized Policy Enforcement** | 集中執行 Telemetry Filtering、Transform、治理政策  |
+| **Expensive Processing**           | 集中處理較耗費資源的 Telemetry Processing          |
+| **Multiple Backends**              | 將 Telemetry 分送到多個 Observability Backends |
+| **Proxy**                          | Gateway 作為 Application 與 Backend 之間的中介層  |
+
+## **3. Advantages vs Disadvantages**
+
+| Pros                                       | Cons                                                        |
+| ------------------------------------------ | ----------------------------------------------------------- |
+| **Centralized Control**：集中管理 Telemetry     | **Latency**：多一個網路傳輸節點                                       |
+| **Easy Scalability**：可以擴充 Gateway Replicas | **High Availability**：正式環境需設計 HA                            |
+| **Expensive Processing**：集中執行耗資源處理         | **Careful Configuration**：需要正確設計 Pipeline、Routing、Resources |
+
+## **4. Gateway vs Agent**
+
+| Comparison               | Agent Pattern                            | Gateway Pattern                 |
+| ------------------------ | ---------------------------------------- | ------------------------------- |
+| Deployment Location      | Application Host / Kubernetes Node / Pod | 獨立 Host 或 Kubernetes Deployment |
+| Main Responsibility      | 就近接收與收集 Telemetry                        | 集中處理及路由 Telemetry               |
+| Host Metrics             | 適合                                       | 通常不直接收集                         |
+| Container Logs           | 適合                                       | 需要其他收集機制                        |
+| Central Filtering        | 可以                                       | 特別適合                            |
+| Multiple Backend Routing | 可以                                       | 特別適合                            |
+| Heavy Processing         | 不建議在所有 Agent 重複執行                        | 適合集中處理                          |
+| Scalability              | 隨 Node 或 Pod 數量增加                        | 依負載擴展 Gateway                   |
+
+## **5. Real-World Example — MyServlet.java**
+
+你目前的 Docker Compose 架構，其實就是簡化版的 **Gateway-only Pattern**：
+
+```mermaid
+
+flowchart LR
+    J["Tomcat<br/>MyServlet.java<br/>Java Agent + OTel API"]
+    P["Python Flask<br/>Auto-Instrumentation"]
+
+    GW["OpenTelemetry Collector<br/>Gateway-only"]
+
+    JAEGER["Jaeger<br/>Traces"]
+    DEBUG["Debug Exporter<br/>Traces / Metrics / Logs"]
+
+    J -->|"OTLP/gRPC :4317"| GW
+    P -->|"OTLP/gRPC :4317"| GW
+
+    GW -->|"OTLP"| JAEGER
+    GW --> DEBUG
+
+    classDef app fill:#2563EB,stroke:#93C5FD,color:#fff
+    classDef gateway fill:#16A34A,stroke:#86EFAC,color:#fff
+    classDef backend fill:#EA580C,stroke:#FDBA74,color:#fff
+
+    class J,P app
+    class GW gateway
+    class JAEGER,DEBUG backend
+
+```
+
+根據你目前的 `otel-collector-config.yaml`：
+
+- **Traces** → Jaeger + Debug Exporter
+- **Metrics** → Debug Exporter
+- **Logs** → Debug Exporter
+
+因此，Application 不需要部署額外的 Collector Agent，就可以將三種 Telemetry Signals 傳送到集中式 Collector。
+
+## **6. Gateway Pattern 的重要注意事項**
+
+對於正式 Kubernetes 部署，Gateway 可以使用多個 Replicas 提高可用性及吞吐量。
+
+但如果使用 **Tail Sampling**，必須確保同一個 Trace ID 的 Spans 被送到同一個 Gateway Instance，否則不同 Gateway 可能只收到部分 Trace，影響採樣決策。
+
+此外，Gateway 無法單靠自身自動讀取所有 Kubernetes Nodes 的 Container Log Files；若需要 Node-local Logs、Host Metrics，通常要另外部署 Collector Agent（DaemonSet）或其他收集元件。
+
+## **7. Final Recommendation**
+
+對你的平台，建議：
+
+| Environment                                            | Recommended Pattern                  |
+| ------------------------------------------------------ | ------------------------------------ |
+| **Docker Compose / PoC**                               | Gateway-only                         |
+| **Docker Desktop Kubernetes**                          | Gateway-only                         |
+| **Multiple K8s Nodes + OTLP-only**                     | Gateway-only 仍可行                     |
+| **Multiple K8s Nodes + Host Metrics / Container Logs** | Agent + Gateway                      |
+| **Production + Centralized Processing / HA**           | Gateway 或 Agent + HA Gateway，依資料來源決定 |
+
+**結論：Gateway Pattern 特別適合 Centralized Control、Expensive Processing、Multiple Backend Routing 和 Telemetry Proxy。**
+
+你目前的 `MyServlet.java → Collector → Jaeger` 已是 Gateway Pattern 的實際例子。當未來需要 Node-level Logs、Host Metrics 或更完整的企業級 Observability 時，再導入 **Agent + Gateway Pattern** 即可。
+
+---
+# Production Deployment
+
+> 尤其是多個 Microservices、分散在多個 Kubernetes Nodes 的企業環境，Agent + Gateway 是我優先推薦評估的 OpenTelemetry Collector 部署架構。**
+
+## ** Agent-to-Gateway Deployment Pattern**：
+
+**Application → Collector Agent → Collector Gateway → Observability Backend**
+
+但要注意：**這是企業常用的推薦架構，不是 OpenTelemetry 規定所有 Production 都必須使用的架構。**
+
+## **1. 為什麼推薦 Agent + Gateway？**
+
+| Component                 | Production Responsibility                                       |
+| ------------------------- | --------------------------------------------------------------- |
+| **Application**           | 透過 OTel SDK / Java Agent 產生 Metrics、Logs、Traces                 |
+| **Collector Agent**       | 就近收集 Application Telemetry、Container Logs、Host Metrics          |
+| **Collector Gateway**     | 集中 Filtering、Batch、Tail Sampling、Routing、Backend Authentication |
+| **Observability Backend** | 儲存及查詢 Telemetry，例如 Prometheus、Loki、Tempo、Jaeger                 |
+
+這樣的設計可以將 **Telemetry Collection** 和 **Centralized Processing** 分開，方便規模化管理。
+
+## **2. Production Kubernetes — Recommended Architecture**
+
+```mermaid
+
+flowchart TB
+    subgraph K8S["Kubernetes Production Cluster"]
+        direction TB
+
+        subgraph N1["K8s Node 1"]
+            direction TB
+            A1["Java Payment Pod"]
+            A2["Node.js API Pod"]
+            A3["Python AI Pod"]
+            AG1["OTel Collector Agent<br/>DaemonSet Pod"]
+
+            A1 -->|"OTLP"| AG1
+            A2 -->|"OTLP"| AG1
+            A3 -->|"OTLP"| AG1
+        end
+
+        subgraph N2["K8s Node 2"]
+            direction TB
+            B1["Java LC Pod"]
+            B2["Node.js Gateway Pod"]
+            B3["Python Worker Pod"]
+            AG2["OTel Collector Agent<br/>DaemonSet Pod"]
+
+            B1 -->|"OTLP"| AG2
+            B2 -->|"OTLP"| AG2
+            B3 -->|"OTLP"| AG2
+        end
+
+        subgraph TIER["Central Gateway Tier"]
+            direction TB
+            SVC["Kubernetes Service<br/>otel-gateway:4317"]
+
+            subgraph REPLICAS["Gateway Deployment — 2 Replicas"]
+                direction LR
+                GW1["OTel Gateway Pod 1"]
+                GW2["OTel Gateway Pod 2"]
+            end
+
+            SVC -->|"Load Balance"| GW1
+            SVC -->|"Load Balance"| GW2
+        end
+
+        AG1 -->|"OTLP/gRPC"| SVC
+        AG2 -->|"OTLP/gRPC"| SVC
+    end
+
+    BACK["Observability Backends<br/>Prometheus / Loki / Tempo"]
+
+    GW1 -->|"Export"| BACK
+    GW2 -->|"Export"| BACK
+
+    classDef app fill:#2563EB,stroke:#93C5FD,color:#fff
+    classDef agent fill:#7C3AED,stroke:#C4B5FD,color:#fff
+    classDef gateway fill:#059669,stroke:#6EE7B7,color:#fff
+    classDef backend fill:#EA580C,stroke:#FDBA74,color:#fff
+    classDef svc fill:#176B8A,stroke:#38BDF8,color:#fff
+
+    class A1,A2,A3,B1,B2,B3 app
+    class AG1,AG2 agent
+    class GW1,GW2 gateway
+    class SVC svc
+    class BACK backend
+
+    style K8S fill:#F0FDF4,stroke:#15803D,stroke-width:2px,color:#166534
+    style N1 fill:#EFF6FF,stroke:#2563EB,color:#1E40AF
+    style N2 fill:#EFF6FF,stroke:#2563EB,color:#1E40AF
+    style TIER fill:#ECFDF5,stroke:#10B981,color:#065F46
+
+```
+
+圖為簡化的多節點架構。Gateway 並非固定將某個 Node 分配到某個 Gateway；實際流量由 Load Balancer 或其他 Routing 策略決定。
+
+## **3. Production 必須考慮的設定**
+
+| Area                   | Recommendation                                                    |
+| ---------------------- | ----------------------------------------------------------------- |
+| **Agent Deployment**   | Kubernetes DaemonSet，每個 Node 一個 Collector                         |
+| **Gateway Deployment** | Deployment，多副本及適當的 Autoscaling                                    |
+| **Memory Management**  | Memory Limiter + Resource Limits                                  |
+| **Batch Processing**   | Agent 小批次、Gateway 較大批次                                            |
+| **Reliability**        | Exporter Queue、Retry、必要時 Persistent Queue                         |
+| **Security**           | TLS / mTLS、Authentication、RBAC、Network Policies                   |
+| **Data Protection**    | Sensitive Data Filtering、Telemetry Attributes Governance          |
+| **Tail Sampling**      | Gateway 層執行，需 Trace ID Affinity                                   |
+| **Monitoring**         | Collector Internal Metrics、Queue Size、Dropped / Refused Telemetry |
+
+這些原則與 OpenTelemetry 官方 Agent-to-Gateway 部署指南一致。
+
+尤其是 **Tail Sampling**：如果有多個 Gateway Replicas，同一條 Trace 的所有 Spans 必須盡可能路由到同一個負責 Sampling 的 Collector。一般 Round-robin 並不能保證這點。
+
+## **4. 與 Gateway-only 比較**
+
+| Environment                          | Recommended Pattern |
+| ------------------------------------ | ------------------- |
+| Docker Compose / PoC                 | Gateway-only        |
+| 單節點 Docker Desktop Kubernetes        | Gateway-only        |
+| 多節點、只有 OTLP Traces / Metrics         | Gateway-only 仍可滿足需求 |
+| 多節點、需要 Container Logs / Host Metrics | **Agent + Gateway** |
+| Production、集中式治理及大量 Telemetry        | **Agent + Gateway** |
+
+### **最終建議**
+
+對你的 Enterprise Banking Microservices，我建議將 **Agent（DaemonSet）+ Gateway（HA Deployment）** 作為 Production 的優先架構候選，尤其當需要 Node-local Logs、Host Metrics、Sensitive Data Filtering、集中式 Backend Routing 或 Tail Sampling 時。
+
+但若部署規模較小、所有應用都能直接以 OTLP 傳送資料，而且沒有 Host-specific Collection 需求，**Gateway-only 仍然是正式 Production 可接受的架構**。
+
+官方參考：[OpenTelemetry Agent-to-Gateway Deployment Pattern](https://opentelemetry.io/docs/collector/deploy/other/agent-to-gateway/?utm_source=chatgpt.com)。
+
+---
+# OpenTelemetry Collector — Scaling Strategies（擴展策略）
+
+## 1. Overview
+
+當 Microservices、Requests、Spans、Metrics 和 Logs 增加時，OpenTelemetry Collector 需要適當擴展。
+
+**建議順序：Monitor → Tune → Vertical Scaling → Horizontal Scaling → Stateful Routing（必要時）。**
+
+OpenTelemetry Collector 可採用兩種主要擴展方式：
+
+| Comparison | Vertical Scaling（垂直擴展） | Horizontal Scaling（水平擴展） |
+|---|---|---|
+| 方法 | 增加單個 Collector 的 CPU / Memory | 增加 Collector Replicas |
+| Kubernetes | 調整 Pod Requests / Limits | Deployment Replicas / HPA |
+| 高可用性 | 單個 Pod 擴容不能實現 HA | 多副本可提高服務可用性 |
+| 主要限制 | Node 資源上限 | Routing、State、Backend Capacity |
+| 適用情境 | 單一 Collector 資源不足 | 需要更高吞吐量或 HA |
+
+```mermaid
+flowchart TB
+    subgraph V["Vertical Scaling"]
+        direction TB
+        C1["Collector<br/>2 vCPU / 2 GiB"] -->|"More Resources"| C2["Collector<br/>4 vCPU / 8 GiB"]
+    end
+    subgraph H["Horizontal Scaling"]
+        direction TB
+        LB["Kubernetes Service"]
+        LB --> H1["Collector Pod 1"]
+        LB --> H2["Collector Pod 2"]
+        LB --> H3["Collector Pod 3"]
+    end
+    classDef before fill:#2563EB,color:#fff
+    classDef collector fill:#16A34A,color:#fff
+    classDef lb fill:#7C3AED,color:#fff
+    class C1 before
+    class C2,H1,H2,H3 collector
+    class LB lb
+```
+
+## 2. Before Scaling — Tune Collector Configuration
+
+擴容前先確認瓶頸是否位於 Collector、Exporter、Backend 或 Network。
+
+| Component | Purpose |
+|---|---|
+| **Memory Limiter** | 限制記憶體壓力並對上游產生拒收／背壓；降低 OOM 風險 |
+| **Batch Processor** | 合併小批次，降低部分 Export Calls 的開銷 |
+| **Requests / Limits** | 設定合理的 CPU、Memory 資源 |
+| **Queue / Retry** | 處理短暫網路及 Backend 故障；留意 Queue 積壓 |
+
+以下是示意片段，需搭配 Receiver / Exporter 定義才能使用：
+
+```yaml
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 512
+    spike_limit_mib: 128
+  batch:
+    timeout: 5s
+    send_batch_size: 1024
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlp]
+```
+
+> Memory Limiter 應放在 Processor Chain 前端。資源數值只是示例，須與 Kubernetes Container Memory Limit 相互配合。Batch 不等於必然啟用壓縮。
+
+## 3. Horizontal Scaling — Stateless vs Stateful
+
+| Processing | Example | Recommended Strategy |
+|---|---|---|
+| **Stateless** | Batch、Filter、一般 OTLP Logs / Traces | Kubernetes Service + Gateway Replicas |
+| **Stateful** | Tail Sampling、Cumulative-to-Delta | Trace / Metric Stream-aware Routing |
+| **Active Scraping** | Prometheus Receiver | Target Allocation 或明確的 Sharding |
+
+對 Stateless Processing，一般的 Kubernetes Service 可以將 OTLP Requests 分散到多個 Gateway Pods。注意 gRPC 可能重用長時間連線，因此連線數、流量分布和 Load Balancer 行為仍需監測。
+
+```mermaid
+flowchart TB
+    APP["Applications / Collector Agents"] --> SVC["Kubernetes Gateway Service"]
+    subgraph GW["Stateless Gateway Deployment"]
+        direction LR
+        G1["Gateway 1"]
+        G2["Gateway 2"]
+        G3["Gateway 3"]
+    end
+    SVC --> G1
+    SVC --> G2
+    SVC --> G3
+    G1 --> BACK["Observability Backend"]
+    G2 --> BACK
+    G3 --> BACK
+    classDef app fill:#2563EB,color:#fff
+    classDef lb fill:#7C3AED,color:#fff
+    classDef gateway fill:#16A34A,color:#fff
+    classDef backend fill:#EA580C,color:#fff
+    class APP app
+    class SVC lb
+    class G1,G2,G3 gateway
+    class BACK backend
+```
+
+## 4. Kubernetes Collector Agent — DaemonSet Deployment
+
+**Collector Agent（DaemonSet）與 OpenTelemetry Java Agent 不同：**
+
+- **Java Agent** 在 JVM 中進行 Zero-code Instrumentation。
+- **Collector Agent** 是獨立的 Collector Pod；Kubernetes DaemonSet 通常在每個符合條件的 Node 部署一個。
+- 每個 Node 可以有多個 Application Pods，共用該 Node 上的 Collector Agent。
+- Gateway 是共用服務層，不是每個 Node 對應一個 Gateway。
+
+### 4.1 Agent + HA Gateway Architecture
+
+```mermaid
+flowchart TB
+    subgraph K8S["Kubernetes Production Cluster"]
+        direction TB
+        subgraph N1["Worker Node 1"]
+            direction TB
+            A1["Java Payment Pod"]
+            A2["Node.js API Pod"]
+            A3["Python Worker Pod"]
+            AG1["Collector Agent Pod<br/>DaemonSet"]
+            A1 -->|"OTLP"| AG1
+            A2 -->|"OTLP"| AG1
+            A3 -->|"OTLP"| AG1
+        end
+        subgraph N2["Worker Node 2"]
+            direction TB
+            B1["Java LC Pod"]
+            B2["Node.js Pod"]
+            B3["Python AI Pod"]
+            AG2["Collector Agent Pod<br/>DaemonSet"]
+            B1 -->|"OTLP"| AG2
+            B2 -->|"OTLP"| AG2
+            B3 -->|"OTLP"| AG2
+        end
+        SVC["Gateway Kubernetes Service<br/>otel-gateway:4317"]
+        subgraph GW["Gateway Deployment — 2 Replicas"]
+            direction LR
+            GW1["Gateway Pod 1"]
+            GW2["Gateway Pod 2"]
+        end
+        AG1 -->|"OTLP/gRPC"| SVC
+        AG2 -->|"OTLP/gRPC"| SVC
+        SVC --> GW1
+        SVC --> GW2
+    end
+    GW1 --> BACK["Observability Backends<br/>Prometheus / Loki / Tempo"]
+    GW2 --> BACK
+    classDef app fill:#2563EB,stroke:#93C5FD,color:#fff
+    classDef agent fill:#7C3AED,stroke:#C4B5FD,color:#fff
+    classDef gateway fill:#059669,stroke:#86EFAC,color:#fff
+    classDef backend fill:#EA580C,stroke:#FDBA74,color:#fff
+    class A1,A2,A3,B1,B2,B3 app
+    class AG1,AG2 agent
+    class SVC,GW1,GW2 gateway
+    class BACK backend
+```
+
+**Routing requirement:** 應用程式要真正送到本機 Node 的 Agent，必須使用 Node IP、Downward API 或可保證 Node-local Routing 的方式。不能假設普通 ClusterIP Service 一定路由到同 Node。
+
+| Agent（DaemonSet） | Gateway（Deployment） |
+|---|---|
+| Node-local OTLP / Container Logs / Host Metrics | Central Filtering / Routing / Backend Credentials |
+| 隨符合條件的 Node 數量增加 | 依流量、資源及 HA 增加 Replicas |
+| 適合就近接收與輕量處理 | 適合昂貴或需集中治理的處理 |
+| 每個 Node 一份管理成本 | 統一出口、TLS 與 Backend Export |
+
+**When to adopt:** 多節點 + Node Logs / Host Metrics / 集中治理時優先評估 Agent + Gateway；若只接收少量 OTLP 且無 Node-local 需求，Gateway-only 仍然可以用於 Production。
+
+## 5. Stateful Scaling — Tail-based Sampling
+
+Tail Sampling 需要同一條 Trace 的相關 Spans 到達同一個 Tail Sampling Gateway Instance，不能只依賴普通 Round-robin。
+
+### 5.1 Trace ID-aware Routing
+
+```mermaid
+flowchart TB
+    subgraph NODE1["Node 1"]
+        A1["Application Pods"] --> AG1["Collector Agent<br/>DaemonSet<br/>load_balancing exporter"]
+    end
+    subgraph NODE2["Node 2"]
+        A2["Application Pods"] --> AG2["Collector Agent<br/>DaemonSet<br/>load_balancing exporter"]
+    end
+    subgraph TIER2["Tail Sampling Gateway Tier"]
+        direction LR
+        G1["Gateway 1<br/>tail_sampling processor"]
+        G2["Gateway 2<br/>tail_sampling processor"]
+        G3["Gateway 3<br/>tail_sampling processor"]
+    end
+    AG1 -->|"Route by Trace ID"| G1
+    AG1 -->|"Route by Trace ID"| G2
+    AG1 -->|"Route by Trace ID"| G3
+    AG2 -->|"Route by Trace ID"| G1
+    AG2 -->|"Route by Trace ID"| G2
+    AG2 -->|"Route by Trace ID"| G3
+    G1 -->|"Sampled Traces"| BACK["Jaeger / Tempo"]
+    G2 --> BACK
+    G3 --> BACK
+    classDef app fill:#2563EB,color:#fff
+    classDef agent fill:#7C3AED,color:#fff
+    classDef sampling fill:#16A34A,color:#fff
+    classDef backend fill:#EA580C,color:#fff
+    class A1,A2 app
+    class AG1,AG2 agent
+    class G1,G2,G3 sampling
+    class BACK backend
+```
+
+**圖示解讀：** 六條 Agent → Gateway 線是「可能路由的目的地」，不代表每筆 Trace 都要發送到全部 Gateways。`load_balancing` Exporter 使用 Trace ID 一致性選擇目的地。Gateway Replicas 變更時仍須考慮路由重分配與 Sampling Decision 一致性；應先驗證再投入正式環境。
+
+## 6. Collector Metrics — When to Scale?
+
+| Metric | Purpose | Interpretation |
+|---|---|---|
+| `otelcol_processor_refused_spans` | Processor 拒絕的 Spans | Rate 持續大於零需調查 |
+| `otelcol_receiver_accepted_spans` | 接收的 Spans | 用於估算 Ingestion Rate |
+| `otelcol_exporter_queue_size` | Export Queue Size | 持續上升可能表示匯出瓶頸 |
+| `otelcol_exporter_queue_capacity` | Export Queue Capacity | 可計算 Queue Utilization |
+| `otelcol_exporter_send_failed_spans` | 失敗的 Span Exports | 調查 Backend / Network / Retry |
+
+```bash
+curl -s http://localhost:8888/metrics | grep 'otelcol_exporter_queue_size'
+```
+
+若版本／設定有暴露這些 Metrics，可在 Prometheus 使用：
+
+```promql
+otelcol_exporter_queue_size / otelcol_exporter_queue_capacity
+```
+
+**注意：** Collector 自身 Metrics 並非所有版本都預設綁定 `8888`。需在 `service.telemetry.metrics` 明確配置適用的 Reader / Endpoint，並確認實際名稱與 Labels。Queue 高也可能是 Backend 慢，不一定是 Collector CPU 不夠。Queue 長期達約 60–70% 容量可作為調查與擴容的早期警訊，而非固定 SLO 門檻。
+
+## 7. Signal-specific Scaling
+
+| Signal | Scaling Approach | Special Consideration |
+|---|---|---|
+| **Traces** | Stateless Gateway Replicas | Tail Sampling 需 Trace ID Affinity |
+| **Metrics** | Horizontal Scaling / Sharding | Prometheus Scraping 需 Target Allocator；Stateful Metric Conversion 需一致性路由 |
+| **Logs** | Horizontal Scaling | Filelog / Node-local Collectors 必須控制 File Ownership 與 Offsets |
+
+不能讓多個 Prometheus Receiver Replicas 無條件重複 Scrape 同一組 Targets；需要 Target Allocation 或其他明確的 Sharding 設計。
+
+## 8. MyServlet.java — From PoC to Production
+
+**Current Docker Compose PoC**：
+
+```text
+MyServlet.java → Java Agent-managed SDK → OTLP/gRPC
+    → Single Collector → Jaeger (Traces) + Debug (All Signals)
+```
+
+**Recommended Multi-node Production Candidate**：
+
+```text
+Multiple Application Pods (each Node)
+    → Node-local Collector Agent (DaemonSet)
+    → Gateway Kubernetes Service
+    → HA Collector Gateway Deployment
+    → Prometheus / Loki / Tempo
+```
+
+若 Gateway 需要 Tail Sampling，應將普通 Gateway Service 分配策略改為 **Trace ID-aware Routing**，由 Node Agents 或獨立 Routing Tier 使用 `load_balancing` Exporter 進行分流。
+
+## 9. Summary — Scaling Checklist
+
+| Step | Recommendation |
+|---|---|
+| **1. Monitor** | CPU、Memory、Receiver Refusals、Exporter Queue、Send Failures |
+| **2. Tune** | Memory Limiter、Batch、Queue / Retry、Requests / Limits |
+| **3. Vertical Scale** | 增加資源直到成本／Node 資源不再合理 |
+| **4. Horizontal Scale** | Stateless Gateway Replicas + Kubernetes Service |
+| **5. Node-local Collection** | 多節點 Node Logs / Host Metrics 使用 DaemonSet Agents |
+| **6. Stateful Routing** | Tail Sampling 使用 Trace ID-aware Load Balancing |
+| **7. Validate** | 確保瓶頸不是 Backend、Network 或重複 Scrape |
+
+**Conclusion:** Vertical Scaling 是增加單個 Collector 的資源；Horizontal Scaling 是增加 Collector Instances；Agent DaemonSet 隨 Node 數量部署，而 Gateway Deployment 隨 Telemetry 負載及 HA 需求擴展。多節點 Production 可優先評估 **Agent + Gateway**，但不是所有環境的硬性要求。
+
+## References
+
+- [Scaling the Collector](https://opentelemetry.io/docs/collector/scaling/)
+- [Agent-to-Gateway Deployment Pattern](https://opentelemetry.io/docs/collector/deploy/other/agent-to-gateway/)
+- [Agent Deployment Pattern](https://opentelemetry.io/docs/collector/deploy/agent/)
+- [Gateway Deployment Pattern](https://opentelemetry.io/docs/collector/deploy/gateway/)
+- [Collector Internal Telemetry](https://opentelemetry.io/docs/collector/internal-telemetry/)
+
+---
+# ** OpenTelemetry SDK Exporter vs Collector 比較方式。**
+
+你提供的說明正確區分了三個不同的角色：
+
+1. **SDK Exporter**：Application SDK 內部的匯出元件，負責將 Telemetry 傳送到指定目的地。
+2. **OpenTelemetry Collector**：獨立運行的服務，負責接收、處理和轉送 Telemetry。
+3. **Collector Exporter**：Collector 內部的輸出元件，負責將處理後的 Telemetry 傳送至 Backend。
+
+尤其是這個流程**完全正確。**：
+
+`Java SDK Exporter → Collector OTLP Receiver → Collector Processing → Collector Exporter → Tempo`
+
+## **1. 更精確的比較**
+
+| Comparison                 | SDK Exporter                                     | OpenTelemetry Collector                            |
+| -------------------------- | ------------------------------------------------ | -------------------------------------------------- |
+| **Where it runs**          | Application Process 內，屬於 SDK                     | 獨立 Process / Container / Pod                       |
+| **What it receives**       | SDK 提供的 Telemetry                                | 來自多個 Applications 或其他 Sources 的 Telemetry          |
+| **Primary Responsibility** | Export Telemetry                                 | Receive、Process、Export                             |
+| **Processing**             | Exporter 本身主要負責傳輸；SDK 其他元件負責 Sampling、Batching 等 | Collector Processors 提供 Batch、Filter、Transform 等功能 |
+| **Destinations**           | 由 SDK Exporter 配置指定目的地                           | 可透過多條 Pipelines 配置不同 Backends                      |
+| **Is Collector required?** | 不需要                                              | 選用                                                 |
+
+最重要的是：**不要拿 SDK Exporter 與整個 Collector 當作功能完全對等的元件比較。**
+
+它們不是同一個層級。
+
+## **2. 正確的架構關係**
+
+```mermaid
+
+flowchart TB
+    subgraph APP["Application — Java / Python"]
+        API["OpenTelemetry API"]
+        SDK["OpenTelemetry SDK<br/>Providers / Processors / Readers"]
+        SE["SDK OTLP Exporter"]
+        API --> SDK --> SE
+    end
+
+    subgraph COL["OpenTelemetry Collector"]
+        REC["OTLP Receiver"]
+        PROC["Collector Processors<br/>Batch / Filter / Transform"]
+        CE["Collector OTLP Exporter"]
+        REC --> PROC --> CE
+    end
+
+    BACK["Tempo<br/>Tracing Backend"]
+
+    SE -->|"OTLP"| REC
+    CE -->|"OTLP"| BACK
+
+    classDef api fill:#2563EB,color:#fff
+    classDef sdk fill:#7C3AED,color:#fff
+    classDef exporter fill:#EA580C,color:#fff
+    classDef collector fill:#059669,color:#fff
+    classDef backend fill:#176B8A,color:#fff
+
+    class API api
+    class SDK sdk
+    class SE,CE exporter
+    class REC,PROC collector
+    class BACK backend
+
+```
+
+這與 OpenTelemetry 官方定義一致：Collector 是獨立執行的元件，可以配置多條由 Receivers、Processors 和 Exporters 組成的 Pipelines。
+
+
+## **3. Collector 是 Optional**
+
+你原文這一段也正確：
+
+> The Collector is optional. If the backend accepts the exporter’s protocol and signal type, the SDK exporter can send directly to the backend.
+
+實際上有兩種有效架構：
+
+| Architecture               | Telemetry Flow                                 |
+| -------------------------- | ---------------------------------------------- |
+| **Direct Export**          | Application SDK Exporter → Backend             |
+| **Collector-based Export** | Application SDK Exporter → Collector → Backend |
+
+你的 `MyServlet.java` 採用第二種，透過 Java Agent-managed SDK 的 OTLP Exporter，將資料傳送至 Collector。
+
+---
+# ** OpenTelemetry Collector — Recap**
+
+本章主要介紹 **OpenTelemetry Collector 的功能、架構、部署方式、Scaling Strategies，以及 SDK Exporter 與 Collector 的差異**。
+
+**核心觀念：OpenTelemetry Collector 是 Application 與 Observability Backend 之間的 Telemetry Processing 元件，負責 Receive → Process → Export。**
+
+## **1. Collector Purpose（主要用途）**
+
+Collector 的主要價值包括：
+
+- **Fast Offloading**：Application 快速將 Telemetry 傳送到 Collector。
+- **Centralized Processing**：集中執行 Batch、Filter、Transform。
+- **Multiple Protocols**：支援 OTLP、Prometheus、Zipkin 等。
+- **Network Simplification**：減少 Application 直接連接不同 Backends 的需求。
+- **Flexibility & Scalability**：支援不同部署方式及水平擴展。
+
+## **2. Collector Distributions**
+
+| Distribution          | Description                                           |
+| --------------------- | ----------------------------------------------------- |
+| **Core Collector**    | 提供核心功能，由 OpenTelemetry 核心團隊維護                         |
+| **Contrib Collector** | 包含更多社群提供的 Receivers、Processors、Exporters 和 Extensions |
+
+Contrib 提供更廣泛的整合元件選擇，但不表示其所有元件都具有相同成熟度。
+
+## **3. Collector Configuration — Five Sections**
+
+| Section        | Responsibility                                   | Activated By                    |
+| -------------- | ------------------------------------------------ | ------------------------------- |
+| **Receivers**  | 接收或主動收集 Telemetry                                | `service.pipelines`             |
+| **Processors** | Batch、Filter、Transform、Memory Limiting           | `service.pipelines`             |
+| **Exporters**  | 將 Telemetry 傳送到指定目的地                             | `service.pipelines`             |
+| **Extensions** | Health Check、pprof、zPages                        | `service.extensions`            |
+| **Service**    | 啟用 Components、配置 Pipelines 和 Collector Telemetry | Collector Service Configuration |
+
+### **Collector Pipeline**
+
+```mermaid
+
+flowchart TD
+    SRC["Telemetry Sources<br/>Java / Python / MySQL"]
+    REC["Receivers"]
+    PROC["Processors"]
+    EXP["Exporters"]
+    BACK["Observability Backend"]
+
+    SRC --> REC --> PROC --> EXP --> BACK
+
+    classDef source fill:#2563EB,color:#fff
+    classDef receiver fill:#176B8A,color:#fff
+    classDef processor fill:#166534,color:#fff
+    classDef exporter fill:#A21CAF,color:#fff
+    classDef backend fill:#EA580C,color:#fff
+
+    class SRC source
+    class REC receiver
+    class PROC processor
+    class EXP exporter
+    class BACK backend
+
+```
+
+**Important:** Processors 按照 `service.pipelines` 中列出的順序執行。
+
+## **4. Collector Deployment Patterns**
+
+| Pattern             | Deployment                             | Best For                                     |
+| ------------------- | -------------------------------------- | -------------------------------------------- |
+| **Agent**           | Host Process / K8s DaemonSet / Sidecar | Host Metrics、快速收集及卸載 Telemetry               |
+| **Gateway**         | Centralized Collector Deployment       | 集中 Policy、Filtering、Routing、Heavy Processing |
+| **Agent + Gateway** | Node Agents → Central Gateway          | 多節點 Production、集中治理及完整 Observability         |
+
+### **Recommended Production Pattern**
+
+```mermaid
+
+flowchart TB
+    subgraph NODE1["K8s Node 1"]
+        A1["Java /<br> Node.js Pods"]
+        AG1["Collector Agent<br/>DaemonSet"]
+        A1 --> AG1
+    end
+
+    subgraph NODE2["K8s Node 2"]
+        A2["Python /<br> Java Pods"]
+        AG2["Collector Agent<br/>DaemonSet"]
+        A2 --> AG2
+    end
+
+    GW["Central Collector Gateway<br/>HA Deployment"]
+    BACK["Observability Backends"]
+
+    AG1 -->|"OTLP"| GW
+    AG2 -->|"OTLP"| GW
+    GW --> BACK
+
+    classDef app fill:#2563EB,color:#fff
+    classDef agent fill:#7C3AED,color:#fff
+    classDef gateway fill:#059669,color:#fff
+    classDef backend fill:#EA580C,color:#fff
+
+    class A1,A2 app
+    class AG1,AG2 agent
+    class GW gateway
+    class BACK backend
+
+```
+
+**Key Point:** Agent + Gateway 是常見的 Production 架構，但不是所有環境都必須部署兩層 Collector。
+
+## **5. Scaling Strategies**
+
+| Strategy                           | Description                      | Recommendation            |
+| ---------------------------------- | -------------------------------- | ------------------------- |
+| **Vertical Scaling**               | 增加單一 Collector 的 CPU、Memory、Disk | 先調整資源與 Processor 配置       |
+| **Horizontal Scaling — Stateless** | 增加 Collector Replicas            | 使用 Load Balancer 分配負載     |
+| **Horizontal Scaling — Stateful**  | 增加 Replicas 並維持資料路由一致性           | 使用 Trace ID-aware Routing |
+
+擴容前應先檢查 **Memory Limiter、Batch Processor、Kubernetes Requests / Limits**。
+
+### **Tail Sampling — Two-Tier Architecture**
+
+Tail Sampling 需要同一條 Trace 的所有 Spans 盡可能到達同一個 Collector Instance。
+
+```mermaid
+
+flowchart TB
+    APP["Applications<br/>Distributed Traces"]
+
+    T1["Tier 1 — Routing Collector<br/>Load-balancing Exporter<br/>Trace ID-aware Routing"]
+
+    subgraph T2["Tier 2 — Tail Sampling Collectors"]
+        direction LR
+        G1["Collector 1<br/>tail_sampling"]
+        G2["Collector 2<br/>tail_sampling"]
+        G3["Collector 3<br/>tail_sampling"]
+    end
+
+    BACK["Jaeger / Tempo"]
+
+    APP -->|"OTLP"| T1
+
+    T1 -->|"Route by Trace ID"| G1
+    T1 -->|"Route by Trace ID"| G2
+    T1 -->|"Route by Trace ID"| G3
+
+    G1 --> BACK
+    G2 --> BACK
+    G3 --> BACK
+
+    classDef app fill:#2563EB,color:#fff
+    classDef routing fill:#7C3AED,color:#fff
+    classDef sampler fill:#059669,color:#fff
+    classDef backend fill:#EA580C,color:#fff
+
+    class APP app
+    class T1 routing
+    class G1,G2,G3 sampler
+    class BACK backend
+
+```
+
+**重要：** 一般 Round-robin Load Balancer 不能保證 Trace Affinity，因此 Tail Sampling 需要適當的 Trace ID-based Routing。
+
+## **6. Collector Internal Metrics**
+
+以下 Metrics 用來判斷 Collector 是否需要擴容：
+
+| Metric                            | Purpose                    |
+| --------------------------------- | -------------------------- |
+| `otelcol_processor_refused_spans` | 監控 Processor 拒絕的 Spans     |
+| `otelcol_receiver_accepted_spans` | 監控 Collector 接收的 Traces 流量 |
+| `otelcol_exporter_queue_size`     | 監控 Export Queue 是否持續累積     |
+
+當 Refused Spans 持續增加、Exporter Queue 持續成長時，應檢查 Collector Resource Limits、Backend Performance 和 Exporter Configuration。
+
+## **7. Signal-specific Scaling**
+
+| Signal      | Scaling Considerations                                             |
+| ----------- | ------------------------------------------------------------------ |
+| **Traces**  | Stateless 可一般 Load Balance；Tail Sampling 需要 Trace ID-aware Routing |
+| **Metrics** | Prometheus Scraping 需要 Target Allocator 或 Sharding，避免重複收集          |
+| **Logs**    | 一般 OTLP Logs 可水平擴展；File-based Collection 需考慮檔案位置及讀取狀態              |
+
+## **8. SDK Exporter vs Collector Exporter**
+
+這是本章最後的重要觀念。
+
+| Comparison          | SDK Exporter                           | Collector Exporter                           |
+| ------------------- | -------------------------------------- | -------------------------------------------- |
+| Location            | Application Runtime                    | Collector Process                            |
+| Purpose             | 將 SDK Telemetry 傳送到目的地                 | 將 Collector Pipeline 的 Telemetry 輸出到 Backend |
+| Configuration       | SDK / Agent Configuration              | Collector `config.yaml`                      |
+| Processing          | 由 SDK 的 Sampler、Processor、Reader 等元件處理 | 由 Collector Processors 處理                    |
+| Typical Destination | Collector 或 Backend                    | Observability Backend                        |
+
+**完整流程：**
+
+`Application → OTel API → SDK → SDK Exporter → Collector Receiver → Collector Processor → Collector Exporter → Backend`
+
+Collector 是選用元件；如果 Backend 支援相應協定，SDK Exporter 也可以直接傳送。
+
+## ** 9. OTCA Exam — Key Takeaways** — Collector 必記重點
+
+- **Receive → Process → Export**
+- **Core vs Contrib**
+- **Receivers / Processors / Exporters / Extensions / Service**
+- **Agent vs Gateway vs Agent + Gateway**
+- **Vertical vs Horizontal Scaling**
+- **Stateless vs Stateful Tail Sampling**
+- **Collector Internal Metrics**
+- **SDK Exporter vs Collector Exporter**
+
+課程指出，本章對應 **OTCA Domain 3 — OpenTelemetry Collector**，占考試約 **26%**；這是課程提供的比例，正式考試仍應以當期官方 Exam Blueprint 為準。
+
+**最終結論：OpenTelemetry Collector 的核心價值，是讓 Telemetry 的收集、處理、路由、擴展及 Backend Integration 能獨立於 Application 管理。**
+
+對你的 `MyServlet.java` Learning / PoC，現有 **Java Agent + Code-based Instrumentation → SDK Exporter → Collector → Jaeger / Debug** 已足以實驗本章大部分功能；未來多節點 Production 再依需求導入 **Collector Agent（DaemonSet）+ HA Gateway**。
+
+---
+# ** RECAP OpenTelemetry Collector — Agent vs Gateway vs Agent + Gateway**
+
+這三種都是 **OpenTelemetry Collector 的 Deployment Patterns（部署模式）**。它們使用相同的 Collector 架構：
+
+**Receivers → Processors → Exporters**
+
+主要差異在於 **Collector 部署在哪裡、如何收集 Telemetry，以及由誰負責集中處理與轉送。**
+
+## **1. 三種 Deployment Patterns 比較**
+
+| Comparison                | Agent Pattern                      | Gateway Pattern                    | Agent + Gateway                        |
+| ------------------------- | ---------------------------------- | ---------------------------------- | -------------------------------------- |
+| **部署位置**                  | 靠近 Application                     | 集中部署                               | Node-local + Centralized               |
+| **Kubernetes 部署**         | DaemonSet / Sidecar                | Deployment / StatefulSet           | DaemonSet + Deployment                 |
+| **Collector 數量**          | 通常每個 Node 一個                       | 依流量設定 Replicas                     | 每個 Node 一個 Agent + 多個 Gateway Replicas |
+| **Telemetry Collection**  | 收集本機 Application、Host、Container 資料 | 接收多個 Applications 的 Telemetry      | Agent 本機收集，再轉給 Gateway                 |
+| **Host Metrics**          | ✅ 適合                               | ⚠️ 無法直接收集所有遠端 Nodes 的 Host Metrics | ✅ 適合                                   |
+| **Centralized Filtering** | 分散在各 Agents                        | ✅                                  | ✅ Gateway                              |
+| **Tail Sampling**         | 不適合直接在各 Node 獨立採樣跨節點 Traces        | ✅ 需 Trace ID Routing               | ✅ 需 Trace ID Routing                   |
+| **High Availability**     | 隨 Node 分散，但本機 Agent 仍可能故障          | 多 Replicas                         | 多 Gateway Replicas                     |
+| **維運複雜度**                 | 中                                  | 低～中                                | 較高                                     |
+| **適用環境**                  | 本機資料收集                             | OTLP 集中處理                          | 大型多節點 Production                       |
+
+## **2. Agent Pattern — Distributed Collection**
+
+```mermaid
+
+flowchart TB
+    subgraph N1["Kubernetes Node 1"]
+        direction TB
+        A1["Java Pod"]
+        A2["Python Pod"]
+        AG1["OTel Agent<br/>DaemonSet Pod"]
+        A1 -->|"OTLP"| AG1
+        A2 -->|"OTLP"| AG1
+    end
+
+    subgraph N2["Kubernetes Node 2"]
+        direction TB
+        B1["Node.js Pod"]
+        B2["Java Pod"]
+        AG2["OTel Agent<br/>DaemonSet Pod"]
+        B1 -->|"OTLP"| AG2
+        B2 -->|"OTLP"| AG2
+    end
+
+    BACK["Observability Backend"]
+
+    AG1 -->|"Export"| BACK
+    AG2 -->|"Export"| BACK
+
+    classDef app fill:#2563EB,color:#fff
+    classDef agent fill:#7C3AED,color:#fff
+    classDef backend fill:#EA580C,color:#fff
+
+    class A1,A2,B1,B2 app
+    class AG1,AG2 agent
+    class BACK backend
+
+```
+
+**重點：每個符合條件的 Kubernetes Node 通常運行一個 Collector Agent DaemonSet Pod。**
+
+Agent 特別適合使用 `hostmetrics`、`kubeletstats` 或 `filelog` Receiver 收集 Node-local Telemetry。
+
+例如，一個 Node 有 10 個 Application Pods，通常不需要 10 個 DaemonSet Agents，而是由一個 Node-local Agent 負責收集。
+
+## **3. Gateway Pattern — Centralized Collection**
+
+```mermaid
+
+flowchart TB
+    subgraph N1["Node 1"]
+        A1["Java Pod"]
+        A2["Python Pod"]
+    end
+
+    subgraph N2["Node 2"]
+        B1["Node.js Pod"]
+        B2["Java Pod"]
+    end
+
+    SVC["Gateway Service<br/>OTLP Endpoint"]
+
+    subgraph GW["Gateway Deployment — 2 Replicas"]
+        direction LR
+        G1["Collector Gateway 1"]
+        G2["Collector Gateway 2"]
+    end
+
+    BACK["Observability Backend"]
+
+    A1 -->|"OTLP"| SVC
+    A2 -->|"OTLP"| SVC
+    B1 -->|"OTLP"| SVC
+    B2 -->|"OTLP"| SVC
+
+    SVC --> G1
+    SVC --> G2
+
+    G1 --> BACK
+    G2 --> BACK
+
+    classDef app fill:#2563EB,color:#fff
+    classDef service fill:#176B8A,color:#fff
+    classDef gateway fill:#059669,color:#fff
+    classDef backend fill:#EA580C,color:#fff
+
+    class A1,A2,B1,B2 app
+    class SVC service
+    class G1,G2 gateway
+    class BACK backend
+
+```
+
+**重點：所有 Applications 直接將 Telemetry 傳送至共享的 Gateway Service。**
+
+優點是容易集中管理 Filtering、Batch、Routing、Authentication 及 Backend Configuration，而且 Gateway 可以獨立增加 Replicas。
+
+但若需要收集每個 Node 的本機 Log Files 或 Host Metrics，單靠中央 Gateway 通常不夠。
+
+## **4. Agent + Gateway Pattern — Combined Architecture**
+
+這是將前面兩種模式結合，也是大型多節點 Production 常見的部署架構。
+
+```mermaid
+
+flowchart TB
+    subgraph K8S["Kubernetes Production Cluster"]
+        direction TB
+
+        subgraph N1["Node 1"]
+            direction TB
+            A1["Java Pod"]
+            A2["Node.js Pod"]
+            AG1["Collector Agent<br/>DaemonSet"]
+            A1 -->|"OTLP"| AG1
+            A2 -->|"OTLP"| AG1
+        end
+
+        subgraph N2["Node 2"]
+            direction TB
+            B1["Python Pod"]
+            B2["Java Pod"]
+            AG2["Collector Agent<br/>DaemonSet"]
+            B1 -->|"OTLP"| AG2
+            B2 -->|"OTLP"| AG2
+        end
+
+        SVC["Gateway Service"]
+
+        subgraph GATEWAY["Gateway Tier — HA Deployment"]
+            direction LR
+            GW1["Gateway 1"]
+            GW2["Gateway 2"]
+        end
+
+        AG1 -->|"OTLP"| SVC
+        AG2 -->|"OTLP"| SVC
+        SVC --> GW1
+        SVC --> GW2
+    end
+
+    BACK["Observability Backends"]
+
+    GW1 --> BACK
+    GW2 --> BACK
+
+    classDef app fill:#2563EB,color:#fff
+    classDef agent fill:#7C3AED,color:#fff
+    classDef service fill:#176B8A,color:#fff
+    classDef gateway fill:#059669,color:#fff
+    classDef backend fill:#EA580C,color:#fff
+
+    class A1,A2,B1,B2 app
+    class AG1,AG2 agent
+    class SVC service
+    class GW1,GW2 gateway
+    class BACK backend
+
+```
+
+在這個架構中：
+
+- **Agent**：負責 Node-local Collection，包括 Application Telemetry、Host Metrics、Container Logs，以及初步處理。
+- **Gateway**：負責集中 Filtering、Routing、Batching、Backend Authentication 和必要的 Tail Sampling。
+- **Backend**：負責 Telemetry Storage、Query、Visualization。
+
+圖中 Gateway Service 適用於一般 Stateless Processing；若 Gateway 執行 Tail Sampling，Agent 的 Traces Pipeline 應使用 Trace ID-aware `load_balancing` Exporter，確保同一條 Trace 的 Spans 路由至同一個 Sampling Collector。
+
+## **5. Agent 和 Gateway 的本質差異**
+
+**Agent 與 Gateway 並不是兩種不同的 OpenTelemetry Collector 軟體。** 它們是相同 Collector 在不同部署位置所扮演的角色。
+
+|                   | Agent                            | Gateway                                                       |
+| ----------------- | -------------------------------- | ------------------------------------------------------------- |
+| **主要目標**          | Local Collection                 | Centralized Processing                                        |
+| **擴展依據**          | Node 數量                          | Telemetry 流量                                                  |
+| **適合的 Receiver**  | `otlp`、`hostmetrics`、`filelog`   | `otlp`                                                        |
+| **適合的 Processor** | `memory_limiter`、`batch`         | `memory_limiter`、`batch`、`filter`、`transform`、`tail_sampling` |
+| **Exporter**      | OTLP 或 Backend-specific Exporter | OTLP 或 Backend-specific Exporter                              |
+
+### **以你的 MyServlet.java 為例**
+
+**目前 Docker Compose PoC：**
+
+`MyServlet.java → Java Agent-managed SDK → SDK OTLP Exporter → Collector Gateway → Jaeger`
+
+**未來多節點 Kubernetes Production：**
+
+`MyServlet.java → Java Agent-managed SDK → SDK OTLP Exporter → Node-local Collector Agent（DaemonSet）→ Collector Gateway（Deployment）→ Jaeger / Tempo`
+
+這裡有兩種不同的 Agent，必須區分：
+
+- **OpenTelemetry Java Agent**：JVM 內的 Zero-code Instrumentation Agent。
+- **OpenTelemetry Collector Agent**：獨立的 Collector Process / Pod，負責收集 Telemetry。
+
+## **6. 最後如何選擇？**
+
+| Your Requirements                                  | Recommended Pattern                          |
+| -------------------------------------------------- | -------------------------------------------- |
+| 小型 PoC、所有服務可直接發送 OTLP                              | **Gateway-only**                             |
+| 需要收集每個 Node 的 Host Metrics、Container Logs，但不需要集中處理 | **Agent-only**                               |
+| 多節點 Kubernetes、需要 Local Collection 和集中式治理          | **Agent + Gateway**                          |
+| 多節點 Kubernetes，且需要跨服務 Tail Sampling                | **Agent + Gateway + Trace ID-aware Routing** |
+
+**最終結論：**
+
+- **Agent = Collect Locally**
+- **Gateway = Process Centrally**
+- **Agent + Gateway = Collect Locally + Process Centrally**
+
+對你的 Enterprise Banking Microservices Production，若同時需要 Application Traces、Node Metrics、Container Logs、集中式 Filtering 和 Tail Sampling，**Agent（DaemonSet）+ Gateway（HA Deployment）是最值得優先採用的模式**。
+
+官方參考：[OpenTelemetry — Agent-to-Gateway Deployment Pattern](https://opentelemetry.io/docs/collector/deploy/other/agent-to-gateway/?utm_source=chatgpt.com)。
+
+---

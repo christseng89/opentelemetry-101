@@ -56,6 +56,14 @@ service:
       exporters: [debug]
 
   telemetry:
+    # Bugfixing
+    traces:
+      processors:
+        - batch:
+            exporter:
+              otlp:
+                protocol: http/protobuf
+                endpoint: http://127.0.0.1:4318
     metrics:
       readers:
         - pull:

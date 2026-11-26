@@ -848,7 +848,7 @@ service:
 因此可以在本機瀏覽器開啟：
 
 - [Collector zPages — Service Diagnostics](http://127.0.0.1:55679/debug/servicez?utm_source=chatgpt.com)
-- [Collector zPages — Internal Traces](http://127.0.0.1:55679/debug/tracez?utm_source=chatgpt.com)
+- [Collector zPages — Internal Traces](http://127.0.0.1:55680/debug/tracez?utm_source=chatgpt.com)
 
 zPages 的 Traces 是 Collector 自身的診斷資料，**不是取代 Jaeger / Tempo 用來查詢所有 Application Distributed Traces 的介面**。
 
@@ -897,33 +897,189 @@ flowchart TB
 
 ---
 
-## Changes yamls
 
-- Update `otel-collector-config.dev.yaml`, `otel-collector-config.prod.yaml`
+# OpenTelemetry — zPages Diagnosis
+
+## 1. Overview
+
+本機同時運行兩個 OpenTelemetry Collector Instances：
+
+| Instance | Version | Deployment |
+|---|---|---|
+| Docker Collector | 0.145.0 | Docker Compose |
+| Windows Collector | 0.165.0 | Windows Service |
+
+**Important:** 兩個 Collector 需要分開設定 Host Ports，避免 Port Conflicts。
+
+## 2. Validate Collector Configuration
+
+使用 Windows Git Bash：
 
 ```bash
-"/c/Program Files/OpenTelemetry Collector/otelcol-contrib.exe" validate --config otel-collector-config.dev.yaml
-"/c/Program Files/OpenTelemetry Collector/otelcol-contrib.exe" validate --config otel-collector-config.prod.yaml
+"/c/Program Files/OpenTelemetry Collector/otelcol-contrib.exe" \
+  validate --config otel-collector-config.dev.yaml
 
+"/c/Program Files/OpenTelemetry Collector/otelcol-contrib.exe" \
+  validate --config otel-collector-config.prod.yaml
+```
+
+注意：這裡使用 Windows Collector 0.165.0 驗證 YAML。如果 Docker Collector 使用 0.145.0，還需要以實際 Docker Image 版本驗證相容性。
+
+更新 Docker Compose 後：
+
+```bash
 docker compose up --build --force-recreate -d
+```
 
-curl -fsS http://localhost:8888/metrics
-# TYPE target_info gauge
-# target_info{service_instance_id="670f9cdf-f5b9-4906-a547-c44b07604484",service_name="otelcol-contrib",service_version="0.145.0"} 1
+確認容器：
 
-curl -fsS http\://127.0.0.1:8888/metrics
-# TYPE target_info gauge
-# target_info{service_instance_id="7662d20e-a1e1-4822-b323-b747202ab11e",service_name="otelcol-contrib",service_version="0.165.0"} 1
+```bash
+docker compose ps
+```
+
+## 3. Validate Collector Internal Metrics
+
+```bash
+curl -fsS http://127.0.0.1:8888/metrics |
+  grep '^target_info'
+```
+
+先前看到兩個不同版本的結果：
+
+```text
+# Docker Collector
+target_info{service_name="otelcol-contrib",service_version="0.145.0",...} 1
+
+# Windows Collector
+target_info{service_name="otelcol-contrib",service_version="0.165.0",...} 1
+```
+
+上述為示意摘要，不代表兩個 Collector 能同時綁定 Host 的 `8888`。
+
+如果兩個 Collector 同時運行，應分別設定 Host Metrics Port，例如：
+
+- Windows Collector：`127.0.0.1:8888`
+- Docker Collector：`127.0.0.1:8889`，映射至 Container 的 `8888`
+
+## 4. zPages Endpoints
+
+假設：
+
+- Windows Collector zPages：`127.0.0.1:55679`
+- Docker Collector zPages：`127.0.0.1:55680` // .env => OTEL_ZPAGES_PORT=55680
+
+### 4.1 Update config yaml files
+
+- `otel-collector-config.yaml`, `otel-collector-config.dev.yaml`, `otel-collector-config.prod.yaml` for Docker Collector
+- `config.yaml` for Windows Collector
+
+```yaml
+...
+telemetry:
+  # Bugfixing
+  traces:
+    processors:
+      - batch:
+          exporter:
+            otlp:
+              protocol: http/protobuf
+              endpoint: http://127.0.0.1:4318
 
 ```
-- <http://localhost:8888/metrics>
 
-- [Collector — Metrics](http://127.0.0.1:8888/metrics)
-- [Collector zPages — Service Diagnostics](http://127.0.0.1:55679/debug/servicez?utm_source=chatgpt.com)
-- [Collector zPages — Internal Traces](http://127.0.0.1:55679/debug/tracez?utm_source=chatgpt.com)
+```powershell
+notepad C:\Program Files\OpenTelemetry Collector\config.yaml
+Restart-Service -Name otelcol-contrib -Force
+```
 
-- [Hello Telemetry App — Metrics](http://localhost:8888/metrics)
-- [Hello Telemetry App zPages — Service Diagnostics](http://localhost:55679/debug/servicez)
-- [Hello Telemetry App zPages — Internal Traces](http://localhost:55679/debug/tracez)
+```bash
+docker compose up --build --force-recreate -d
+```
+
+### Windows Collector
+
+| Page | URL |
+|---|---|
+| Service Diagnostics | http://127.0.0.1:55679/debug/servicez |
+| Pipeline Diagnostics | http://127.0.0.1:55679/debug/pipelinez |
+| Internal Traces | http://127.0.0.1:55679/debug/tracez |
+| Extensions | http://127.0.0.1:55679/debug/extensionz |
+| Metrics | http://127.0.0.1:8888/metrics |
+
+### Docker Collector
+
+| Page | URL |
+|---|---|
+| Service Diagnostics | http://127.0.0.1:55680/debug/servicez |
+| Pipeline Diagnostics | http://127.0.0.1:55680/debug/pipelinez |
+| Internal Traces | http://127.0.0.1:55680/debug/tracez |
+| Extensions | http://127.0.0.1:55680/debug/extensionz |
+| Metrics | http://localhost:8888/metrics |
+
+## 5. Validate IPv4 / IPv6 Connectivity
+
+Check IPv6:
+
+```bash
+curl.exe -6 -v http://localhost:55680/debug/tracez 2>&1 |
+  grep -i 'Trying'
+```
+
+Check IPv4:
+
+```bash
+curl.exe -4 -v http://localhost:55680/debug/tracez 2>&1 |
+  grep -i 'Trying'
+```
+
+Expected connection attempts:
+
+```text
+IPv6: Trying [::1]:55680...
+IPv4: Trying 127.0.0.1:55680...
+```
+
+**Important:** `Trying` 只代表 Curl 嘗試連線，不代表 HTTP Request 成功。
+
+Verify HTTP Response:
+
+```bash
+curl.exe -4 -sS -o /dev/null -w '%{http_code}\n' \
+  http://localhost:55680/debug/tracez
+```
+
+HTTP `200` 表示該頁面正常回應。
+
+## 6. What Can zPages Diagnose?
+
+| zPages | Purpose |
+|---|---|
+| **ServiceZ** | Collector Service、Build、Runtime |
+| **PipelineZ** | Pipeline Components 和 Data Flow |
+| **TraceZ** | Collector Internal Spans / Errors |
+| **ExtensionZ** | Active Extensions |
+| **FeatureZ** | Feature Gates |
+
+zPages 主要用於 Collector 自身的診斷，不是查詢所有 Application Distributed Traces 的後端。
+
+## 7. Conclusion
+
+**Windows Collector 和 Docker Collector 可以同時運行，但必須使用不同 Host Ports。**
+
+建議：
+
+- Windows Metrics：`8888`
+- Docker Metrics：`8889`
+- Windows zPages：`55679`
+- Docker zPages：`55680`
+
+這樣可以清楚分開兩個 Collector 的 Metrics 和 Diagnostics。
+
+---
+
+## Official References
+
+- [OpenTelemetry Collector Configuration](https://opentelemetry.io/docs/collector/configuration/)
+- [OpenTelemetry zPages Extension](https://github.com/open-telemetry/opentelemetry-collector/tree/main/extension/zpagesextension)
 
 ---

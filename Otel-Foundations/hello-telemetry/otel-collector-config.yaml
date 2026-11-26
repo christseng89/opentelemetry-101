@@ -5,8 +5,25 @@ receivers:
         endpoint: 0.0.0.0:4317
       http:
         endpoint: 0.0.0.0:4318
+  
+  mysql:
+    endpoint: ht-mysql:3306
+    username: myuser
+    password: mypassword
+    database: mydatabase
+    collection_interval: 10s
+    initial_delay: 1s    
+    statement_events:
+      digest_text_limit: 120
+      time_limit: 24h
+      limit: 250
 
 processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 512
+    spike_limit_mib: 128
+  
   batch:
 
 exporters:
@@ -17,6 +34,10 @@ exporters:
     tls:
       insecure: true
 
+extensions:
+  zpages:
+    endpoint: 0.0.0.0:55679
+
 service:
   pipelines:
     traces:
@@ -25,7 +46,7 @@ service:
       exporters: [debug,otlp]
     
     metrics:
-      receivers: [otlp]
+      receivers: [otlp,mysql]
       processors: [batch]
       exporters: [debug]
 
@@ -33,3 +54,14 @@ service:
       receivers: [otlp]
       processors: [batch]
       exporters: [debug]
+
+  telemetry:
+    metrics:
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: "0.0.0.0"
+                port: 8888
+  
+  extensions: [zpages]

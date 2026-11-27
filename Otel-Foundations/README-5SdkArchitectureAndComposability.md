@@ -894,7 +894,7 @@ Meter meter = openTelemetry.getMeter("MyServlet");
 - Application 使用 OTel API 建立 Custom Spans、Metrics。
 - SDK 負責處理與匯出 Telemetry。
 
-**因此，既然你已採用 Java Agent，就不需要在&#x20;**`MyServlet.java`**&#x20;再執行&#x20;**`OpenTelemetrySdk.builder()`**，避免重複建立 SDK。**
+**因此，既然你已採用 Java Agent，就不需要在**`MyServlet.java`**再執行**`OpenTelemetrySdk.builder()`**，避免重複建立 SDK。**
 
 另外，`addShutdownHook(new Thread(sdk::close))` 適合管理自行建立的 SDK；使用 Agent-managed SDK 時通常不需要由 Application 再註冊相同的 Shutdown Hook。
 

@@ -1138,7 +1138,7 @@ service:
 
 對你目前的 `otel-collector-config.yaml` 而言，增加並啟用 `health_check` 後，便可利用已在 Docker Compose 映射的 `13133` Port 進行健康檢查。
 
-**Key Point：Collector Extension 提供 Pipeline 以外的管理與輔助能力，必須在&#x20;**`service.extensions`**&#x20;中明確啟用。**
+**Key Point：Collector Extension 提供 Pipeline 以外的管理與輔助能力，必須在**`service.extensions`**中明確啟用。**
 
 ---
 

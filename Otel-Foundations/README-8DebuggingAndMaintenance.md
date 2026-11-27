@@ -748,7 +748,7 @@ flowchart TB
 | Debugging Tool                   | 主要用途                       | 檢查內容                                              |
 | -------------------------------- | -------------------------- | ------------------------------------------------- |
 | **1. Debug Exporter**            | 檢視實際接收的 Telemetry          | Traces、Metrics、Logs                               |
-| **2. Collector&#x20;**`validate` | 驗證 Collector Configuration | YAML 結構、元件設定與 Pipeline 配置                         |
+| **2. Collector**`validate` | 驗證 Collector Configuration | YAML 結構、元件設定與 Pipeline 配置                         |
 | **3. Internal Telemetry**        | 監控 Collector 自身            | Receiver、Processor、Exporter、CPU、Memory            |
 | **4. zPages**                    | 即時診斷 Collector             | Collector Components、Internal Traces、Runtime 診斷資訊 |
 
@@ -772,7 +772,7 @@ exporters:
 
 這證明 Metrics Pipeline 正常運作，但不代表 Application Traces / Logs 也已成功接收。
 
-## **2. Collector&#x20;**`validate`**&#x20;Subcommand**
+## **2. Collector**`validate`**Subcommand**
 
 **用途：在啟動或重新啟動 Collector 之前，檢查 Configuration 是否有效。**
 
@@ -1081,5 +1081,1295 @@ zPages 主要用於 Collector 自身的診斷，不是查詢所有 Application D
 
 - [OpenTelemetry Collector Configuration](https://opentelemetry.io/docs/collector/configuration/)
 - [OpenTelemetry zPages Extension](https://github.com/open-telemetry/opentelemetry-collector/tree/main/extension/zpagesextension)
+
+---
+
+# OpenTelemetry Collector — In-memory Queue vs Persistent Queue
+
+> 本章介紹 OpenTelemetry Collector 的 Sending Queue、Retry、Backpressure 與 Persistent Storage，說明如何提升 Telemetry Export 的可靠性，以及發生 Backend Failure 時如何降低 Data Loss 的風險。
+
+## 1. Overview
+
+OpenTelemetry Collector 的 Exporter 可以使用 **Sending Queue** 暫存等待傳送的 Telemetry，並透過 **Retry on Failure** 處理可重試的 Export Errors。
+
+**Core Concept:**
+
+- **Sending Queue**：暫存尚未成功匯出的 Telemetry Requests。
+- **Retry**：當 Export 發生可重試錯誤時，依 Backoff Policy 重新傳送。
+- **Persistent Queue**：使用 Disk-backed Storage，改善 Collector Restart / Crash 後的資料恢復能力。
+- **Backpressure**：當下游無法持續接收資料時，可能向上游回報拒絕或可重試錯誤。
+
+**Important:** Queue 和 Retry 可以降低資料遺失風險，但不保證 Telemetry 永遠不會遺失。
+
+---
+
+## 2. Collector Queue Architecture
+
+```mermaid
+flowchart TB
+    APP["Application<br/>SDK OTLP Exporter"]
+
+    subgraph COL["OpenTelemetry Collector"]
+        direction LR
+        REC["Receiver"]
+        PROC["Processor"]
+        Q[("Sending Queue<br/>In-memory / Persistent")]
+        EXP["OTLP Exporter"]
+        RETRY["Retry Logic"]
+
+        REC --> PROC --> Q --> EXP
+        EXP -.->|"Retryable Error"| RETRY
+        RETRY -.->|"Retry / Backoff"| EXP
+    end
+
+    BACK["Observability Backend<br/>Tempo / OTLP Endpoint"]
+
+    APP -->|"OTLP"| REC
+    EXP -->|"Successful Export"| BACK
+
+    classDef app fill:#2563EB,color:#fff
+    classDef receiver fill:#176B8A,color:#fff
+    classDef processor fill:#7C3AED,color:#fff
+    classDef queue fill:#D97706,color:#fff
+    classDef exporter fill:#059669,color:#fff
+    classDef backend fill:#475569,color:#fff
+
+    class APP app
+    class REC receiver
+    class PROC processor
+    class Q queue
+    class EXP,RETRY exporter
+    class BACK backend
+```
+
+此圖是概念架構。
+
+- 實際 Sending Queue、Retry、Timeout 通常由 Collector 的 **Exporter Helper** 提供，並非每種 Exporter 都支援完全相同的設定。
+- Queue 位於 Export Path，負責緩衝等待匯出的 Telemetry；Retry 則處理 Exporter 發生的可重試錯誤。
+
+---
+
+## 3. In-memory Queue vs Persistent Queue
+
+| Comparison | In-memory Queue | Persistent Queue |
+|---|---|---|
+| **Storage** | Collector Process Memory | Disk-backed Storage |
+| **Performance** | 通常較快，無額外 Disk I/O | 需要 Disk I/O |
+| **Collector Restart** | 未完成匯出的 Queue 資料通常遺失 | 可恢復仍保存在磁碟中的 Queue 資料 |
+| **Collector Crash** | Queue 內的資料通常遺失 | 可降低 Crash 造成的 Queue 資料遺失 |
+| **Queue Full** | 無法接收更多 Queue Items | 同樣可能達到容量限制 |
+| **Disk Dependency** | 不需要 | 需要可靠的 Persistent Storage |
+| **Configuration** | `sending_queue.enabled: true` | `sending_queue.storage: file_storage` |
+| **Data Durability** | 不提供 Process Restart Durability | 提供較好的 Queue Durability |
+| **Best Use Case** | PoC、低風險環境或可容忍資料遺失的 Workload | 對 Restart / Crash 資料恢復要求較高的 Production |
+
+### Important Clarification
+
+配置：
+
+- `storage: file_storage`: 代表 Sending Queue 使用 Persistent Storage。 **不是 Collector 同時建立兩份獨立的 In-memory Queue 和 Persistent Queue。**
+- File Storage 用於保存 Queue 的待處理資料；Collector 在執行時仍然會使用**一定的 Memory** 進行資料處理。
+
+---
+
+## 4. Sending Queue — Queue Size
+
+例如：
+
+```yaml
+sending_queue:
+  enabled: true
+  queue_size: 5000
+```
+
+**`queue_size: 5000` 並不代表可以儲存 5,000 個 Spans。**
+
+Exporter Helper 的 Sending Queue 支援不同計量方式：
+
+| `sizer` | Meaning |
+|---|---|
+| `requests` | 按 Telemetry Requests / Batches 計算 |
+| `items` | 按 Spans、Metric Data Points 或 Log Records 計算 |
+| `bytes` | 按序列化資料大小計算 |
+
+預設值通常是：
+
+```yaml
+sending_queue:
+  enabled: true
+  sizer: requests
+  queue_size: 5000
+```
+
+因此 `queue_size: 5000` 在此表示最多約 5,000 個 Queue Requests / Batches，而不是 5,000 個 Spans。
+
+實際容量也取決於每個 Request 的大小。
+
+---
+
+## 5. Configuration Examples
+
+### 5.1 In-memory Queue
+
+```yaml
+exporters:
+  otlp:
+    endpoint: tempo.example.com:4317
+
+    tls:
+      insecure: false
+
+    sending_queue:
+      enabled: true
+      sizer: requests
+      queue_size: 5000
+
+    retry_on_failure:
+      enabled: true
+      initial_interval: 5s
+      max_interval: 30s
+      max_elapsed_time: 10m
+```
+
+**Behavior:**
+
+1. Collector 接收 Telemetry。
+2. Sending Queue 將待匯出的 Requests 暫存於 Memory。
+3. Exporter 將資料傳送到 Tempo。
+4. 如果發生可重試錯誤，依 Retry Policy 重試。
+5. Collector Crash / Restart 後，Memory Queue 中尚未完成的資料通常無法恢復。
+
+### 5.2 Persistent Queue
+
+```yaml
+extensions:
+  file_storage:
+    directory: C:/otel-data/queue
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 127.0.0.1:4317
+
+exporters:
+  otlp:
+    endpoint: tempo.example.com:4317
+
+    tls:
+      insecure: false
+
+    sending_queue:
+      enabled: true
+      sizer: requests
+      storage: file_storage
+      queue_size: 5000
+
+    retry_on_failure:
+      enabled: true
+      initial_interval: 5s
+      max_interval: 30s
+      max_elapsed_time: 10m
+
+service:
+  extensions: [file_storage]
+
+  pipelines:
+    traces:
+      receivers: [otlp]
+      exporters: [otlp]
+```
+
+**Behavior:**
+
+1. Collector 接收 Spans。
+2. Exporter Sending Queue 將待處理 Requests 保存至 File Storage。
+3. Collector 嘗試匯出到 Tempo。
+4. 若 Backend 暫時不可用，依 Retry Policy 重試。
+5. 若 Collector Crash / Restart，重新啟動後可嘗試恢復仍保存在 Storage 中的 Requests。
+6. 當 Backend 恢復時，Collector 繼續處理可恢復的 Queue Items。
+
+### Important Notes
+
+- `tempo.example.com` 是示例 Endpoint，須替換為實際的 OTLP Backend。
+- `tls.insecure: false` 表示使用 TLS，Backend 必須具備相容的 TLS Configuration。
+- 如果 Collector 需要接收遠端 Telemetry，必須依網路與安全需求配置 Receiver Endpoint。
+- `file_storage` 需由 `service.extensions` 啟用。
+- `C:/otel-data/queue` 必須存在，Windows Service Account 需要讀寫權限。
+- 此為獨立配置範例，不能直接覆蓋現有的 Windows Collector Configuration。
+
+---
+
+## 6. File Storage vs File Exporter
+
+這兩個元件容易混淆，但用途完全不同。
+
+| Comparison | File Storage Extension | File Exporter |
+|---|---|---|
+| **Component Type** | Extension | Exporter |
+| **Purpose** | 儲存 Collector Queue / State | 將 Telemetry 匯出成檔案 |
+| **Typical Use** | Persistent Sending Queue | Debugging、Local Telemetry Files |
+| **Data Format** | 由 Storage Extension 管理 | JSON 等支援格式 |
+| **Configuration** | `extensions.file_storage` | `exporters.file` |
+| **Pipeline Reference** | `service.extensions` + Exporter Storage Reference | `service.pipelines.exporters` |
+
+例如：
+
+- **Persistent Queue Storage**: `C:/otel-data/queue`
+- **File Exporter Output**: `C:/otel-data/traces.json`
+- **Key Point:** Persistent Queue 不是長期 Telemetry Database；成功匯出的 Queue Data 通常不再需要保留。
+
+---
+
+## 7. Backend Failure — What Happens?
+
+假設：
+
+`Java SDK Exporter → Collector → Tempo`
+
+但 Tempo 暫時無法連線。
+
+| Step | In-memory Queue | Persistent Queue |
+|---|---|---|
+| **1. Backend Unavailable** | 嘗試 Export / Retry | 嘗試 Export / Retry |
+| **2. Queue Buffering** | 將 Requests 暫存於 Memory | 將 Requests 暫存於 Disk-backed Storage |
+| **3. Collector Crash** | 尚未完成的 Memory Queue 資料通常遺失 | 可在 Restart 後恢復已持久化的資料 |
+| **4. Backend Recovery** | 繼續傳送尚存 Queue Data | 繼續傳送可恢復的 Queue Data |
+| **5. Queue Full** | 可能拒絕新的 Telemetry | 可能拒絕新的 Telemetry |
+| **6. Retry Exhausted** | 相關 Requests 可能被丟棄 | 相關 Requests 仍可能被丟棄 |
+
+### Retry Behavior
+
+```yaml
+retry_on_failure:
+  enabled: true
+  initial_interval: 5s
+  max_interval: 30s
+  max_elapsed_time: 10m
+```
+
+| Parameter | Purpose |
+|---|---|
+| `enabled: true` | 啟用 Retry |
+| `initial_interval: 5s` | 初始重試等待間隔 |
+| `max_interval: 30s` | Backoff 的最大等待間隔 |
+| `max_elapsed_time: 10m` | 單次待匯出資料的最大重試時間 |
+
+Retry 通常採用 Exponential Backoff，並可能包含 Jitter。
+
+**Important:** `max_elapsed_time: 10m` 不是保證資料一定可保存 10 分鐘，也不是 Queue Retention Policy。
+
+它控制可重試失敗的 Retry Duration；當期限耗盡，資料可能被丟棄。
+
+---
+
+## 8. Queue Full、Backpressure 與 Data Loss
+
+當 Exporter Queue 滿載時，Collector 可能無法繼續將新的 Telemetry Requests 加入 Queue。
+
+這時通常會發生：
+
+1. Queue Enqueue Failure。
+2. Collector 向上游回報錯誤或拒絕資料。
+3. 上游 SDK / Agent / Collector 可能依其設定重新傳送。
+4. 如果上游無法重試或沒有可用 Buffer，Telemetry 可能遺失。
+
+因此：
+
+**Queue Full 不等於每一筆新資料必然立即遺失，但代表資料遺失風險顯著增加。**
+
+Exporter Helper 亦可能提供 `block_on_overflow` 設定，讓資料在 Queue 滿載時等待可用空間，但這仍受 Timeout 和上游重試行為限制。
+
+### Common Data Loss Scenarios
+
+| Scenario | Risk |
+|---|---|
+| Backend 長時間不可用 | Retry Exhausted |
+| Queue Full | Enqueue Failure |
+| Collector Crash + Memory Queue | 未持久化的 Queue Data 遺失 |
+| Persistent Storage Full | 新資料無法寫入 |
+| Persistent Storage Corruption | Queue 恢復可能失敗 |
+| Permanent Export Error | Retry 不適用或資料被丟棄 |
+| Upstream SDK Drops Data | Collector 無法恢復從未收到的 Telemetry |
+
+**Persistent Queue 不保證 End-to-End Exactly-once Delivery。**
+
+---
+
+## 9. Monitoring Sending Queue
+
+透過 Collector Internal Metrics 監控 Exporter 的狀態。
+
+| Metric | Purpose |
+|---|---|
+| `otelcol_exporter_queue_size` | 目前 Queue 使用量 |
+| `otelcol_exporter_queue_capacity` | Queue 容量 |
+| `otelcol_exporter_enqueue_failed_spans` | Spans 無法加入 Queue |
+| `otelcol_exporter_send_failed_spans` | Spans Export 發生失敗 |
+| `otelcol_exporter_sent_spans` | 成功送出的 Spans |
+| `otelcol_receiver_refused_spans` | Receiver 拒絕的 Spans |
+
+實際 Metrics 名稱、是否啟用及 Labels，需依 Collector 版本與 Exporter Configuration 確認。
+
+### Windows Git Bash Commands
+
+```bash
+curl -fsS http://127.0.0.1:8888/metrics |
+  grep -E 'otelcol_exporter_queue_size|otelcol_exporter_queue_capacity|otelcol_exporter_enqueue_failed|otelcol_exporter_send_failed'
+```
+
+### Queue Utilization
+
+```promql
+otelcol_exporter_queue_size
+/
+otelcol_exporter_queue_capacity
+```
+
+上面是概念性 PromQL，實際使用應確認 `exporter`、`service_instance_id` 等 Labels 是否正確配對。
+
+**Important:** Queue Size 持續增加，可能代表：
+
+- Backend Processing Capacity 不足。
+- Network Connection 或 TLS / Authentication 異常。
+- Exporter Retry 持續發生。
+- Telemetry Ingestion Rate 高於 Export Rate。
+- Collector CPU / Memory 或其他資源不足。
+
+應先確認瓶頸位置，不要直接認定增加 Collector Replicas 就能解決問題。
+
+---
+
+## 10. Windows Collector — Current vs Future Configuration
+
+目前已驗證的 Windows Collector 架構：
+
+`OTLP / Prometheus Receivers → Batch Processor → Debug Exporter`
+
+其中：
+
+- Receiver 正常接收 Collector Internal Metrics。
+- Batch Processor 正常運作。
+- Debug Exporter 將 Telemetry 寫入 Windows Event Log。
+- 尚未配置遠端 OTLP Backend Exporter。
+- 尚未配置 Persistent Sending Queue。
+
+因此，**目前不需要為 Debug Exporter 強行加入 Sending Queue。**
+
+### Future Production Architecture
+
+```mermaid
+flowchart TB
+    APP["Java EE / Python Applications<br/>OTLP SDK Exporters"]
+
+    subgraph COL["OpenTelemetry Collector"]
+        direction TB
+        REC["OTLP Receiver"]
+        PROC["Batch / Memory Limiter"]
+        Q[("Persistent Sending Queue<br/>file_storage")]
+        EXP["OTLP Exporter<br/>Retry on Failure"]
+
+        REC --> PROC --> Q --> EXP
+    end
+
+    DISK[("Persistent Disk<br/>Queue Storage")]
+    BACK["Tempo<br/>OTLP Backend"]
+
+    APP -->|"OTLP"| REC
+    Q -.->|"Persist / Recover"| DISK
+    EXP -->|"OTLP / Retry"| BACK
+
+    classDef app fill:#2563EB,color:#fff
+    classDef receiver fill:#176B8A,color:#fff
+    classDef processor fill:#7C3AED,color:#fff
+    classDef queue fill:#D97706,color:#fff
+    classDef exporter fill:#059669,color:#fff
+    classDef backend fill:#475569,color:#fff
+
+    class APP app
+    class REC receiver
+    class PROC processor
+    class Q,DISK queue
+    class EXP exporter
+    class BACK backend
+```
+
+對需要高可靠性的 Production，可考慮：
+
+- Network Exporters 啟用 Sending Queue。
+- 啟用 Retry on Failure。
+- 根據容量和 Recovery Requirements 使用 Persistent Queue。
+- 監控 Queue Size、Queue Capacity、Enqueue Failures、Send Failures。
+- 將 Queue Storage 部署於受保護且具有適當 Disk Capacity 的 Persistent Volume。
+- 評估 Collector Agent → Gateway 和 Gateway → Backend 的各段傳輸可靠性。
+
+---
+
+## 11. OTCA Exam — Key Takeaways
+
+| Concept | Key Point |
+|---|---|
+| **Sending Queue** | 暫存待匯出的 Telemetry |
+| **In-memory Queue** | 使用 RAM，Restart / Crash 可能遺失資料 |
+| **Persistent Queue** | 使用 Disk-backed Storage，可改善 Restart / Crash Recovery |
+| **Retry** | 對可重試的 Export Failures 重新傳送 |
+| **Backpressure** | 下游無法處理時，可能向上游回報錯誤 |
+| **Queue Full** | 可能拒絕新資料，造成 Enqueue Failure |
+| **File Storage Extension** | 提供持久化 Queue Storage |
+| **File Exporter** | 將 Telemetry 匯出到本機檔案 |
+| **Internal Metrics** | 監控 Queue Capacity、Failures 與 Export Throughput |
+
+### Final Conclusion
+
+- **In-memory Queue = Fast Buffering，但 Collector Crash / Restart 可能遺失尚未匯出的資料。**
+- **Persistent Queue = Disk-backed Buffering，可改善 Collector Crash / Restart 後的資料恢復能力。**
+- **Retry = 重新傳送暫時匯出失敗的資料，但不保證永久成功。**
+- **Backpressure = 當 Collector 或 Backend 無法持續處理新資料時，透過錯誤或拒絕機制將壓力反映到上游。**
+
+這些機制共同提高 Telemetry Pipeline Resiliency，但無法完全消除資料遺失風險。
+
+---
+
+## Official References
+
+- [OpenTelemetry Collector — Resiliency](https://opentelemetry.io/docs/collector/resiliency/)
+- [OpenTelemetry Collector — Exporter Helper](https://github.com/open-telemetry/opentelemetry-collector/tree/main/exporter/exporterhelper)
+- [OpenTelemetry Collector Contrib — File Storage Extension](https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/extension/storage/filestorage)
+- [OpenTelemetry Collector — Internal Telemetry](https://opentelemetry.io/docs/collector/internal-telemetry/)
+
+---
+# ** OpenTelemetry Collector `memory_limiter` Processor（記憶體限制處理器）**
+
+> 主要作用是：**監控 Collector 的記憶體使用量，當使用量過高時，暫時拒絕接收新的 Telemetry Data，降低 Collector 發生 Out of Memory（OOM）的風險。**
+
+## **1. YAML Configuration 說明**
+
+```yaml
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 512
+    spike_limit_mib: 128
+
+```
+
+| Parameter         | Value     | 說明                        |
+| ----------------- | --------- | ------------------------- |
+| `check_interval`  | `1s`      | 每 1 秒檢查 Collector 的記憶體使用量 |
+| `limit_mib`       | `512`     | 記憶體 Hard Limit，512 MiB    |
+| `spike_limit_mib` | `128`     | 預留 128 MiB 作為突增緩衝         |
+| Soft Limit        | `384 MiB` | 512 − 128 = 384 MiB       |
+
+這組設定會產生兩個重要的記憶體門檻。
+
+## **2. Soft Limit 與 Hard Limit 的差異**
+
+| Memory Usage            | Collector Behavior                     |
+| ----------------------- | -------------------------------------- |
+| 低於 384 MiB              | 正常接收 Telemetry                         |
+| 達到約 384 MiB（Soft Limit） | 開始拒絕新資料，向上游回傳可重試錯誤                     |
+| 達到約 512 MiB（Hard Limit） | 除了拒絕資料，也會嘗試強制執行 Garbage Collection（GC） |
+| 降回 Soft Limit 以下        | 恢復正常接收                                 |
+
+這些門檻主要針對 Collector 的 Go Heap Memory，不是 Windows Process 或 Kubernetes Container 的完整記憶體上限。
+
+## **3.**`memory_limiter`**應該放在哪裡？**
+
+官方建議將 `memory_limiter` 放在 Pipeline 的第一個 Processor，讓它可以盡早對上游施加 Backpressure。
+
+```yaml
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 512
+    spike_limit_mib: 128
+
+  batch: {}
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [debug]
+```
+
+執行流程：
+
+`OTLP Receiver → Memory Limiter → Batch Processor → Debug Exporter`
+
+注意：只在 `processors` 定義元件還不夠，**必須在**`service.pipelines`**引用它才會生效。**
+
+## **4. Memory Limiter 會不會造成 Telemetry 遺失？**
+
+**有可能，但不是一超過門檻就必然遺失。**
+
+當 Collector 記憶體不足時，Memory Limiter 會拒絕新資料並回報可重試錯誤。若上游 SDK 或 Collector 能夠正確重試，資料可能成功補送；若無法重試，則可能遺失。
+
+### **最後總結**
+
+- `check_interval: 1s`：每秒檢查記憶體。
+- `limit_mib: 512`：設定 Hard Limit。
+- `spike_limit_mib: 128`：為突發記憶體使用預留空間，讓 Soft Limit 成為 384 MiB。
+
+**Memory Limiter 的目的不是把 Collector 記憶體永久鎖定在 512 MiB 以下，而是在記憶體壓力過高時啟動保護機制，降低 OOM 與 Telemetry Data Loss 的風險。**
+
+---
+## **OpenTelemetry Collector — Error Handling & Data Loss（重點摘要）**
+
+本課介紹當 Collector 無法將 Telemetry 傳送至 Backend 時，如何透過 **Retry、Sending Queue、Persistent Queue、Memory Limiter 和 Backpressure** 降低資料遺失風險。
+
+### **1. 三個可能發生 Data Loss 的位置**
+
+| Component     | Data Loss 原因                       |
+| ------------- | ---------------------------------- |
+| **Receiver**  | Collector 負載過高，拒絕接收 Telemetry      |
+| **Processor** | Filter、Sampling 或錯誤配置導致資料被丟棄       |
+| **Exporter**  | Backend 無法連線、回應緩慢或 Network Failure |
+
+### **2. 五種 Error Handling 機制**
+
+| Mechanism            | Purpose               | Limitation                     |
+| -------------------- | --------------------- | ------------------------------ |
+| **Retry**            | Export 失敗時自動重試        | 超過重試期限可能遺失資料                   |
+| **In-memory Queue**  | 暫存在 RAM，等待重新傳送        | Collector Crash / Restart 可能遺失 |
+| **Persistent Queue** | 將待傳送資料儲存在 Disk        | 有 Disk I/O 開銷，但可改善重啟後恢復能力      |
+| **Backpressure**     | 將下游處理不足的壓力回傳上游        | 上游無法持續緩衝時可能丟失資料                |
+| **Memory Limiter**   | 記憶體過高時拒絕新資料，降低 OOM 風險 | 需要上游具備適當 Retry 能力              |
+
+### **3. Error Handling Architecture**
+
+```mermaid
+
+flowchart TB
+    APP["Application<br/>SDK Exporter"]
+    REC["Collector Receiver"]
+    MEM["Memory Limiter<br/>Processor"]
+    BATCH["Batch Processor"]
+    Q[("Sending Queue<br/>Memory / Persistent")]
+    EXP["Exporter<br/>Retry on Failure"]
+    BACK["Observability Backend"]
+
+    APP -->|"OTLP"| REC
+    REC --> MEM --> BATCH --> Q --> EXP
+    EXP -->|"Export / Retry"| BACK
+
+    Q -.->|"Queue Full / Backpressure"| REC
+    MEM -.->|"Memory Pressure"| REC
+    REC -.->|"Refuse / Retryable Error"| APP
+
+    classDef app fill:#2563EB,color:#fff
+    classDef receiver fill:#176B8A,color:#fff
+    classDef processor fill:#7C3AED,color:#fff
+    classDef queue fill:#D97706,color:#fff
+    classDef exporter fill:#059669,color:#fff
+    classDef backend fill:#475569,color:#fff
+
+    class APP app
+    class REC receiver
+    class MEM,BATCH processor
+    class Q queue
+    class EXP exporter
+    class BACK backend
+
+```
+
+此圖為概念流程；Backpressure 通常透過錯誤回傳傳遞，不是另一條實際的 Telemetry Pipeline。
+
+### **4. OTCA Exam — Key Takeaways**
+
+- **Retry**：處理暫時性的 Backend / Network Failure。
+- **Sending Queue**：緩衝等待匯出的 Telemetry。
+- **Persistent Queue**：降低 Collector Restart / Crash 造成的資料遺失風險。
+- **Backpressure**：當下游無法處理資料時，向上游反映壓力。
+- **Memory Limiter**：建議放在 Pipeline 第一個 Processor，降低 Collector OOM 風險。
+
+**最重要的結論：**
+
+**Retry + Sending Queue + Memory Limiter + Backpressure = Resilient Telemetry Pipeline**
+
+但這些機制**無法保證 Zero Data Loss**，只能降低常見故障情境下的資料遺失風險。
+
+---
+✅ **基本上對！但更精確地說，Queue Full 或 Memory Pressure 會透過 Backpressure 機制，讓 Collector Receiver 無法繼續成功接收部分 Telemetry，而不是直接通知 Receiver 關閉或停止監聽。**
+
+## **1. 兩種 Backpressure 情況**
+
+| Condition           | 發生位置                     | 行為                                          |
+| ------------------- | ------------------------ | ------------------------------------------- |
+| **Queue Full**      | Exporter Sending Queue   | Exporter 無法將新的 Telemetry 加入 Queue，可能向上游回傳錯誤 |
+| **Memory Pressure** | Memory Limiter Processor | 拒絕新的 Telemetry，回傳可重試錯誤                      |
+| **Receiver**        | Pipeline Entry           | 將下游錯誤回傳給 SDK / Sender（視 Receiver 協定而定）      |
+| **SDK Exporter**    | Application              | 依 SDK 實作和設定進行 Retry、Buffer 或 Drop           |
+
+## **2. Backpressure 如何傳遞？**
+
+```mermaid
+
+flowchart TB
+    APP["Application<br/>SDK Exporter"]
+    REC["Collector Receiver"]
+    MEM["Memory Limiter"]
+    PROC["Batch Processor"]
+    Q[("Exporter Sending Queue")]
+    EXP["Collector Exporter"]
+    BACK["Observability Backend"]
+
+    APP -->|"OTLP"| REC
+    REC --> MEM --> PROC --> Q --> EXP --> BACK
+
+    Q -.->|"Queue Full Error"| PROC
+    PROC -.->|"Error Propagation"| MEM
+    MEM -.->|"Error Propagation"| REC
+
+    MEM -.->|"Memory Pressure Error"| REC
+    REC -.->|"OTLP Error Response"| APP
+
+    classDef app fill:#2563EB,color:#fff
+    classDef receiver fill:#176B8A,color:#fff
+    classDef processor fill:#7C3AED,color:#fff
+    classDef queue fill:#D97706,color:#fff
+    classDef exporter fill:#059669,color:#fff
+    classDef backend fill:#475569,color:#fff
+
+    class APP app
+    class REC receiver
+    class MEM,PROC processor
+    class Q queue
+    class EXP exporter
+    class BACK backend
+
+```
+
+此圖為同步錯誤回傳的概念示意。實際上 Batch Processor 可能非同步轉送資料，因此 Exporter Queue Full 的錯誤不一定能回傳至原始的 SDK Request。
+
+## **3. Receiver 會停止接收嗎？**
+
+**通常不會直接停止監聽 Port&#x20;**`4317`**&#x20;或&#x20;**`4318`**。**
+
+例如：
+
+- Collector 的 OTLP Receiver 仍在監聽 `4317`。
+- 新的 Application Request 仍可能建立連線。
+- 但當 Memory Limiter 拒絕資料時，Receiver 可能回傳 gRPC `Unavailable` 等可重試錯誤。
+- SDK 收到錯誤後，依其 Retry Policy 決定是否重新傳送。
+
+因此要區分：
+
+**停止監聽（Stop Listening）≠ 拒絕處理資料（Refuse Telemetry）。**
+
+### **4. OTCA Exam 重點**
+
+- **Queue Full**：Exporter 無法加入新的 Requests。
+- **Memory Limiter**：Collector 記憶體壓力過高時拒絕新資料。
+- **Backpressure**：讓上游得知下游暫時無法處理資料。
+- **Receiver**：可能向 SDK 回傳錯誤，但不一定停止監聽。
+- **SDK**：能否成功 Retry 取決於具體實作。
+
+**結論：**
+
+> 當 **Exporter Queue 已滿**，或 **Memory Limiter 偵測到記憶體使用量過高**時，OpenTelemetry Collector 可能會拒絕接收新的 Telemetry 資料，並透過 **Backpressure（反向壓力）機制**，將無法處理資料的情況向上游 Receiver 及 SDK 回報。
+
+> **Receiver** 通常仍會持續監聽連接埠，但可能回傳可重試的錯誤（Retryable Errors），而不是接受新的 Telemetry 資料。
+
+---
+# OpenTelemetry Collector Sending Queue 有兩種設定方式：
+
+架構是： `Application → Collector Receiver → Memory Limiter → Batch Processor → Sending Queue → OTLP Exporter → Tempo`
+
+1. **In-memory Queue**：資料暫存在 RAM。
+2. **Persistent Queue**：資料保存在 Disk，可改善 Collector 重啟後的恢復能力。
+
+## **1. In-memory Queue Configuration**
+
+```yaml
+
+exporters:
+  otlp:
+    endpoint: tempo.example.com:4317
+
+    tls:
+      insecure: false
+
+    sending_queue:
+      enabled: true
+      sizer: requests
+      queue_size: 5000
+      num_consumers: 10
+
+    retry_on_failure:
+      enabled: true
+      initial_interval: 5s
+      max_interval: 30s
+      max_elapsed_time: 10m
+
+```
+
+### **各參數的意義**
+
+| Parameter          | Value      | Description                          |
+| ------------------ | ---------- | ------------------------------------ |
+| `enabled`          | `true`     | 啟用 Sending Queue                     |
+| `sizer`            | `requests` | 以 Requests / Batches 為 Queue 計量單位    |
+| `queue_size`       | `5000`     | Queue 容量為 5,000 個 Requests / Batches |
+| `num_consumers`    | `10`       | 最多 10 個 Queue Consumers 並行執行匯出工作     |
+| `retry_on_failure` | `true`     | 啟用可重試錯誤的重傳                           |
+| `max_elapsed_time` | `10m`      | 每個失敗 Request 的最大重試期間                 |
+
+**注意：**`queue_size: 5000`**不代表 5,000 個 Spans，而是最多 5,000 個 Requests / Batches。**
+
+## **2. Persistent Queue Configuration**
+
+如果你希望 Collector 重啟後仍能恢復尚未成功傳送的資料，則加入 `file_storage` Extension。
+
+```yaml
+
+extensions:
+  file_storage:
+    directory: C:/otel-data/queue
+
+exporters:
+  otlp:
+    endpoint: tempo.example.com:4317
+
+    tls:
+      insecure: false
+
+    sending_queue:
+      enabled: true
+      sizer: requests
+      storage: file_storage
+      queue_size: 5000
+      num_consumers: 10
+
+    retry_on_failure:
+      enabled: true
+      initial_interval: 5s
+      max_interval: 30s
+      max_elapsed_time: 10m
+
+service:
+  extensions: [file_storage]
+
+```
+
+這只是配置片段。需要與現有 Receivers、Processors、Pipelines 合併。
+
+在你的 Windows 環境中，先建立儲存目錄：
+
+```bash
+mkdir -p /c/otel-data/queue
+```
+
+並確認 Windows Service Account 具備讀寫權限。
+
+**Persistent Queue 使用**`file_storage`**保存 Queue 資料，不是額外建立一個與 In-memory Queue 並行的獨立 Queue。**
+
+## **3. Queue 在 Collector 的位置**
+
+```mermaid
+
+flowchart TB
+    APP["Application<br/>SDK OTLP Exporter"]
+
+    subgraph COL["OpenTelemetry Collector"]
+        REC["OTLP Receiver"]
+        MEM["Memory Limiter"]
+        BATCH["Batch Processor"]
+        Q[("Sending Queue<br/>Memory / Disk")]
+        EXP["OTLP Exporter<br/>Retry on Failure"]
+
+        REC --> MEM --> BATCH --> Q --> EXP
+    end
+
+    BACK["Tempo / Jaeger"]
+
+    APP -->|"OTLP"| REC
+    EXP -->|"Export"| BACK
+
+    Q -.->|"Queue Full / Backpressure"| REC
+    REC -.->|"Retryable Error"| APP
+
+    classDef app fill:#2563EB,color:#fff
+    classDef receiver fill:#176B8A,color:#fff
+    classDef processor fill:#7C3AED,color:#fff
+    classDef queue fill:#D97706,color:#fff
+    classDef exporter fill:#059669,color:#fff
+    classDef backend fill:#475569,color:#fff
+
+    class APP app
+    class REC receiver
+    class MEM,BATCH processor
+    class Q queue
+    class EXP exporter
+    class BACK backend
+
+```
+
+此圖為概念架構。Queue Full 時錯誤不一定能傳回最初的 SDK Request，尤其當中間使用非同步 Batch Processor 時。
+
+## **4. 你的 Windows Collector 要如何設定？**
+
+你目前的 `config.yaml` 使用：
+
+```yaml
+exporters:
+  debug:
+    verbosity: detailed
+```
+
+以及：
+
+```yaml
+service:
+  pipelines:
+    traces:
+      receivers: [otlp, jaeger, zipkin]
+      processors: [batch]
+      exporters: [debug]
+```
+
+`debug`**Exporter 主要用來輸出診斷資料，不需要配置網路 Sending Queue。**
+
+當你新增真正的 OTLP Exporter 後，可以這樣修改 Traces Pipeline：
+
+```yaml
+service:
+  pipelines:
+    traces:
+      receivers: [otlp, jaeger, zipkin]
+      processors: [batch]
+      exporters: [debug, otlp]
+```
+
+並在 `exporters.otlp` 中設定前面介紹的 `sending_queue` 與 `retry_on_failure`。
+
+這樣 Traces 就會同時輸出至 Debug Exporter，以及使用 Sending Queue 的遠端 OTLP Exporter。
+
+## **5. 如何查看 Queue 使用量？**
+
+透過 Collector Internal Metrics，在 Windows Git Bash 執行：
+
+```
+curl -fsS http://127.0.0.1:8888/metrics |
+  grep -E 'otelcol_exporter_queue_size|otelcol_exporter_queue_capacity|otelcol_exporter_enqueue_failed'
+```
+
+| Metric                                  | Purpose            |
+| --------------------------------------- | ------------------ |
+| `otelcol_exporter_queue_size`           | 目前 Queue 使用量       |
+| `otelcol_exporter_queue_capacity`       | Queue 最大容量         |
+| `otelcol_exporter_enqueue_failed_spans` | 無法加入 Queue 的 Spans |
+
+如果目前只有 `debug` Exporter，可能不會看到這些 Queue Metrics。實際可用的指標也取決於 Collector 版本和配置。
+
+
+
+**最終建議：** 你的 Windows Collector PoC 可以先使用 **In-memory Queue + Retry** 測試 Backend Failure。如果要模擬 Collector Restart 後恢復待送資料，再改成 **Persistent Queue +**`file_storage`。
+
+官方參考：[OpenTelemetry Collector — Resiliency](https://opentelemetry.io/docs/collector/resiliency/?utm_source=chatgpt.com)。
+
+---
+
+# OpenTelemetry — Schema Management（結構描述管理）
+
+- <https://github.com/open-telemetry/semantic-conventions/tree/main/schemas>
+- Container `ht-otel-collector` => Resource SchemaURL: https://opentelemetry.io/schemas/1.38.0
+
+> Schema Management 用於管理不同版本的 OpenTelemetry Telemetry Schema，確保不同版本的 Instrumentation 可以共存，並在有適用轉換規則時，將 Telemetry 轉換為一致的格式。
+
+## 1. Overview
+
+OpenTelemetry Schema Management 包含四個核心概念：
+
+| Concept | Purpose |
+|---|---|
+| **Schema Management** | 管理不同版本 Telemetry 的相容性 |
+| **Schema URL** | 識別 Telemetry 使用的 Schema Version |
+| **Schema Files** | 定義不同 Schema Versions 之間的轉換規則 |
+| **Schema Processor** | 在 Collector 中執行 Schema Translation |
+
+**Core Concept:**
+
+不同版本的 Java EE、Python、Node.js Instrumentation 可能產生不同的 Attribute Names。
+
+透過 **Schema URL + Schema Files + Schema Processor**，可以在支援的轉換範圍內將不同版本的 Telemetry 統一成一致的格式。
+
+---
+
+## 2. Why Schema Management Is Needed
+
+### 2.1 Attribute Naming Changes
+
+例如 OpenTelemetry Semantic Conventions 更新後：
+
+| Comparison | Older Schema | Newer Schema |
+|---|---|---|
+| Schema Version | 1.11.0 | 1.21.0 |
+| Attribute Name | `net.host.name` | `server.address` |
+| Purpose | Host Name | Server Address |
+
+**Schema Translation:**
+
+`net.host.name` → `server.address`
+
+這項 Attribute Rename 存在於 OpenTelemetry 的相關 Schema Migration Rules 中。
+
+假設：
+
+- Java EE Legacy Application 使用舊版 Instrumentation。
+- Python Flask Service 使用新版 Instrumentation。
+- Collector 同時接收兩個 Applications 的 Telemetry。
+
+如果 Grafana Dashboard 或 Tempo Query 只搜尋 `server.address`，舊版 `net.host.name` 的資料可能不會被查詢到。
+
+Schema Management 可以降低不同 Instrumentation Versions 對 Dashboard、Query 和 Alert Rules 的影響。
+
+### 2.2 Important Clarification
+
+Schema Management 不是單純修改 Attribute Name，而是根據 Schema Version 與相應的 Transformation Rules 執行相容性轉換。
+
+並非所有 Semantic Conventions Changes 都能自動完成轉換。
+
+---
+
+## 3. Schema URL
+
+### 3.1 What Is a Schema URL?
+
+Schema URL 用來標識一組 Telemetry 所遵循的 OpenTelemetry Schema。
+
+例如：
+
+`https://opentelemetry.io/schemas/1.24.0`
+
+| Component | Meaning |
+|---|---|
+| `https://opentelemetry.io/schemas/` | Schema Family / URL Prefix |
+| `1.24.0` | Schema Version |
+| Full Schema URL | 識別特定版本的 Schema |
+
+例如 Java Application 或 Python Instrumentation 產生 Telemetry 時，可能包含：
+
+```text
+SchemaURL:
+https://opentelemetry.io/schemas/1.24.0
+```
+
+這代表該組 Telemetry 宣告使用 OpenTelemetry Schema `1.24.0`。
+
+### 3.2 Collector Debug Exporter Example
+
+投影片中的 Debug Exporter 顯示：
+
+```text
+ScopeSpans SchemaURL:
+https://opentelemetry.io/schemas/1.11.0
+```
+
+這表示該組 ScopeSpans Telemetry 使用 Schema `1.11.0`。
+
+**Important:**
+
+- Schema URL 不是 Trace ID。
+- Schema Version 不是 Java Agent Version。
+- Schema Version 不是 SDK Version。
+- Schema Version 也不是 Collector Software Version。
+
+Schema URL 是讓 Telemetry Consumer 或 Schema-aware Processor 識別資料 Schema 的依據。
+
+---
+
+## 4. Schema Files
+
+### 4.1 Purpose
+
+Schema Files 定義不同 Schema Versions 之間可執行的 Transformation Rules。
+
+例如：
+
+**Older Attribute:**
+
+```text
+net.host.name
+```
+
+**Newer Attribute:**
+
+```text
+server.address
+```
+
+Schema File 可描述這類 Attribute Rename，供支援 Schema Translation 的元件使用。
+
+### 4.2 Schema Files vs Semantic Conventions
+
+| Component | Responsibility |
+|---|---|
+| **Semantic Conventions** | 定義標準 Telemetry Attributes、Metrics、Spans 等名稱及語意 |
+| **Schema Files** | 描述不同 Schema Versions 之間的變更及轉換規則 |
+| **Schema URL** | 識別 Telemetry 使用的 Schema |
+| **Schema Processor** | 依可用規則執行 Telemetry Transformation |
+
+**Important:**
+
+Schema File 主要描述版本之間的轉換規則，不是所有 Telemetry Attributes 的完整資料字典。
+
+Schema Files 也不保證可以轉換所有不相容的語意變更。
+
+---
+
+## 5. Schema Processor — Collector Translation
+
+### 5.1 Purpose
+
+Schema Processor 是 OpenTelemetry Collector 的 Processor Component。
+
+它可以根據輸入的 Schema URL 與可用的 Schema Transformation Rules，嘗試將 Telemetry 轉換至指定的 Target Schema。
+
+### 5.2 Architecture
+
+```mermaid
+flowchart TB
+    A["Java EE Legacy Application<br/>Schema 1.11.0<br/>net.host.name"]
+    B["Python Flask Application<br/>Schema 1.21.0<br/>server.address"]
+
+    subgraph COL["OpenTelemetry Collector"]
+        direction TB
+        REC["OTLP Receiver"]
+        SCH["Schema Processor<br/>Target Schema 1.21.0"]
+        EXP["OTLP Exporter"]
+
+        REC --> SCH --> EXP
+    end
+
+    BACK["Observability Backend<br/>Consistent Attributes<br/>server.address"]
+
+    A -->|"OTLP"| REC
+    B -->|"OTLP"| REC
+    EXP --> BACK
+
+    classDef old fill:#EA580C,color:#fff
+    classDef new fill:#2563EB,color:#fff
+    classDef processor fill:#7C3AED,color:#fff
+    classDef backend fill:#059669,color:#fff
+
+    class A old
+    class B new
+    class REC,SCH,EXP processor
+    class BACK backend
+```
+
+### 5.3 Expected Translation
+
+在具備適用轉換規則的情況下：
+
+| Input | Target Schema | Output |
+|---|---|---|
+| `net.host.name` | 1.21.0 | `server.address` |
+| `server.address` | 1.21.0 | `server.address` |
+
+因此，下游 Observability Backend 可以使用一致的 Attribute Name。
+
+**Important:** Schema Processor 會依 Schema URL 與可用規則處理 Telemetry，不會無條件修改所有 Attributes。
+
+---
+
+## 6. Schema Processor Configuration
+
+### 6.1 Configuration from the Training Slide
+
+投影片中的範例：
+
+```yaml
+processors:
+  schema:
+    prefetch:
+      - https://opentelemetry.io/schemas/1.9.0
+
+    targets:
+      - https://opentelemetry.io/schemas/1.6.1
+```
+
+| Parameter | Purpose |
+|---|---|
+| `prefetch` | 預先取得或快取指定 Schema 的轉換定義 |
+| `targets` | 定義欲轉換的目標 Schema Version |
+
+注意：此範例的 Target Schema 是 `1.6.1`，不是 `1.21.0` 或 `1.24.0`。
+
+### 6.2 Example — Target Schema 1.21.0
+
+如果希望將有適用規則的舊版 Telemetry 轉換至 Schema `1.21.0`：
+
+```yaml
+processors:
+  schema:
+    prefetch:
+      - https://opentelemetry.io/schemas/1.21.0
+
+    targets:
+      - https://opentelemetry.io/schemas/1.21.0
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [schema, batch]
+      exporters: [otlp]
+```
+
+### 6.3 Example — Target Schema 1.24.0
+
+```yaml
+processors:
+  schema:
+    targets:
+      - https://opentelemetry.io/schemas/1.24.0
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [schema, batch]
+      exporters: [otlp]
+```
+
+這些都是部分 Configuration Examples，實際部署仍需定義：
+
+- OTLP Receiver
+- Batch Processor
+- OTLP Exporter
+- Service Pipelines
+
+此外，必須確認 Collector Contrib 版本是否包含 Schema Processor，以及所使用版本支援的配置格式和 Schema Translation Rules。
+
+**Important:** Processor 只在 `processors` 中宣告並不會自動啟用，必須透過 `service.pipelines` 引用。
+
+Schema Processor 的成熟度與支援範圍需依實際版本確認，不應假設其適用於所有 Production Workloads。
+
+---
+
+## 7. Real-World Example — Java EE + Python Flask
+
+假設既有銀行系統的 Distributed Tracing 架構為：
+
+`Java EE Application → Python Flask Service → OpenTelemetry Collector → Tempo`
+
+不同 Application 可能使用不同 Instrumentation Versions。
+
+| Application | Instrumentation | Attribute |
+|---|---|---|
+| Java EE Legacy System | Older Java Agent | `net.host.name` |
+| Python Flask Service | Newer Python Instrumentation | `server.address` |
+| Collector Schema Processor | Schema Translation | `server.address` |
+| Grafana / Tempo | Unified Query | `server.address` |
+
+### Benefits
+
+Schema Management 可以：
+
+1. 讓不同 Instrumentation Versions 共存。
+2. 在可轉換範圍內統一 Attribute Names。
+3. 降低 Grafana Dashboard Query 的維護負擔。
+4. 降低不同 Schema Versions 對 Alert Rules 的影響。
+5. 協助 Application Instrumentation 升級與遷移。
+
+### Important Distinction
+
+**Schema Management ≠ Context Propagation**
+
+| Comparison | Schema Management | Context Propagation |
+|---|---|---|
+| Purpose | 統一 Telemetry Schema | 維持跨服務 Trace Context |
+| Main Component | Schema URL / Schema Processor | Propagator |
+| Typical Data | `net.host.name`、`server.address` | `traceparent`、`tracestate` |
+| Main Problem | Attribute Naming Inconsistency | Broken Distributed Trace |
+| Fix Different Trace IDs? | No | 正確的 Context Propagation 可避免不必要的 Trace 分裂 |
+
+Schema Processor 不會修復缺失的 `traceparent`，也不會自動合併不同 Trace IDs。
+
+---
+
+## 8. OTCA Exam — Key Takeaways
+
+| Concept | Key Point |
+|---|---|
+| **Schema Management** | Maintain Telemetry Compatibility |
+| **Semantic Conventions** | Define Standard Telemetry Names and Meaning |
+| **Schema URL** | Identify Schema Version |
+| **Schema Files** | Describe Version-to-Version Transformations |
+| **Schema Processor** | Translate Telemetry to a Supported Target Schema |
+| **Target Schema** | Define Desired Output Schema |
+| **Schema Compatibility** | Reduce Impact of Instrumentation Version Changes |
+
+### Key Definitions
+
+**Schema URL = Which Schema Version?**
+
+**Schema File = What Changed Between Versions?**
+
+**Schema Processor = How to Transform Telemetry?**
+
+**Schema Management = How to Maintain Compatibility?**
+
+---
+
+## 9. Conclusion
+
+OpenTelemetry Schema Management 的主要目的是：
+
+**維持不同版本的 Instrumentation、Collector 與 Observability Backend 之間的 Telemetry Schema Compatibility。**
+
+主要流程為：
+
+**Telemetry + Schema URL → Schema Processor → Target Schema → Observability Backend**
+
+例如：
+
+`net.host.name (Older Schema) → Schema Translation → server.address (Newer Schema)`
+
+對 Java EE Legacy Application 與 Python Flask Service 而言，Schema Management 可在支援的轉換範圍內統一 Telemetry Attributes，降低 Semantic Conventions 更新對 Grafana Dashboards、Tempo Queries 和 Alert Rules 的影響。
+
+但 **Schema Processor 只處理 Schema Transformation，不處理 Context Propagation 或 Trace ID Correlation。**
+
+---
+
+## Official References
+
+- [OpenTelemetry Telemetry Schemas](https://opentelemetry.io/docs/specs/otel/schemas/)
+- [OpenTelemetry Semantic Conventions](https://opentelemetry.io/docs/specs/semconv/)
+- [OpenTelemetry Schema 1.24.0](https://opentelemetry.io/schemas/1.24.0)
+- [OpenTelemetry Collector Schema Processor](https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/processor/schemaprocessor)
+
+---
+
+## **Recap — OpenTelemetry Debugging & Maintenance**
+
+### **1. Context Propagation Failures**
+
+- Mismatched propagators
+- Headers stripped
+- Missing context injection
+
+### **2. Debugging Collector Pipelines**
+
+- Debug exporter
+- `validate` subcommand
+- Internal telemetry
+- zPages extension
+
+### **3. Error Handling & Data Loss**
+
+- Retries
+- Queues — In-memory, persistent
+- Backpressure
+
+### **4. Schema Management**
+
+- Schema URL
+- Schema files
+- `schemaprocessor`
 
 ---
